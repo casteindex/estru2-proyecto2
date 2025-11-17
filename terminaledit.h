@@ -10,6 +10,12 @@ class TerminalEdit : public QPlainTextEdit {
 
  signals:
   void enterPressed();
+  void textTyped(const QString& text);
+  void backspacePressed();
+  void arrowUpPressed();
+  void arrowDownPressed();
+  void arrowLeftPressed();
+  void arrowRightPressed();
 
  protected:
   void keyPressEvent(QKeyEvent* event) override;
