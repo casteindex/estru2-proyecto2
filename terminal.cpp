@@ -13,13 +13,12 @@ Terminal::Terminal(QWidget* parent)
   // Conectar las señales que emite el editor cuando el usuario presiona alguna
   // tecla especial con el slot que ejecuta el comando en Terminal.
   connect(editor, &TerminalEdit::enterPressed, this, &Terminal::onEnter);
-  connect(editor, &TerminalEdit::textTyped, this, &Terminal::onTextTyped);
+  // connect(editor, &TerminalEdit::textTyped, this, &Terminal::onTextTyped);
   connect(editor, &TerminalEdit::backspacePressed, this, &Terminal::onBackspace);
   connect(editor, &TerminalEdit::arrowLeftPressed, this, &Terminal::onArrowLeft);
   connect(editor, &TerminalEdit::arrowRightPressed, this, &Terminal::onArrowRight);
   connect(editor, &TerminalEdit::arrowUpPressed, this, &Terminal::onArrowUp);
   connect(editor, &TerminalEdit::arrowDownPressed, this, &Terminal::onArrowDown);
-  connect(editor, &TerminalEdit::requestCursorFix, this, &Terminal::forceCursorToEnd);
 
   printPrompt();  // Mostrar primer prompt
 }
@@ -29,42 +28,74 @@ Terminal::~Terminal() {
 }
 
 // -------------------- Funciones ---------------
-void Terminal::processCommand(const QString& cmd) {
-  if (cmd == "") return;
+void Terminal::processCommand(const QString& linea) {
+  if (linea == "") return;
+
+  // Crear un arreglo de partes de la línea ingresada por el usuario
+  // usando el espacio como separador
+  QStringList partes = linea.split(' ', Qt::SkipEmptyParts);
+  QString cmd = partes[0];           // comando principal
+  QStringList args = partes.mid(1);  // todos los argumentos
+
   if (cmd == "clear") {
     editor->clear();
     return;
-  }
-  if (cmd == "exit") {
+  } else if (cmd == "exit") {
     QApplication::quit();
     return;
+  } else if (cmd == "cd") {
+  } else {
+    editor->appendPlainText("Comando '" + cmd + "' no reconocido.");
   }
-  // Comando desconocido
-  editor->appendPlainText("Comando '" + cmd + "' no reconocido");
 }
 
-// -------------------- Funcionamiento general de la terminal ---------------
+// -------------------- Procesamiento de comandos ---------------
+void Terminal::onEnter() {
+  QTextCursor c = editor->textCursor();
+  c.movePosition(QTextCursor::End);
+  editor->setTextCursor(c);
+
+  QString fullText = editor->toPlainText();
+  QString cmd = fullText.mid(lineStartPos).trimmed();
+
+  if (!cmd.isEmpty())
+    historial.append(cmd);
+
+  indiceHistorial = -1;
+
+  processCommand(cmd);
+  printPrompt();
+}
+
+// Sobreescribir la línea actual con el texto que se pase como argumento
+void Terminal::setLineText(const QString& text) {
+  QTextCursor c = editor->textCursor();
+  c.setPosition(lineStartPos);
+  // Seleccionar todo lo que está actualmente escrito por el usuario
+  // y borrarlo
+  c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+  c.removeSelectedText();
+  // Insertar el texto que sí queremos mostrar en la línea actual
+  c.insertText(text);
+  editor->setTextCursor(c);
+}
+
 void Terminal::printPrompt() {
   editor->appendPlainText(prompt);
   lineStartPos = editor->toPlainText().length();
-  currentLine.clear();
+  // currentLine.clear();
   // Asegurar que el cursor quede al final
   QTextCursor c = editor->textCursor();
   c.movePosition(QTextCursor::End);
   editor->setTextCursor(c);
 }
 
-void Terminal::onTextTyped(const QString& t) {
-  editor->insertPlainText(t);
-  currentLine += t;
-}
-
+// -------------------- Manejo de input de teclas ---------------
 void Terminal::onBackspace() {
   QTextCursor c = editor->textCursor();
   if (c.position() <= lineStartPos) return;
   c.deletePreviousChar();
   editor->setTextCursor(c);
-  if (!currentLine.isEmpty()) currentLine.chop(1);
 }
 
 void Terminal::onArrowLeft() {
@@ -99,37 +130,4 @@ void Terminal::onArrowDown() {
     indiceHistorial = -1;
     setLineText("");
   }
-}
-
-void Terminal::setLineText(const QString& text) {
-  QTextCursor c = editor->textCursor();
-  // Eliminar la línea actual
-  c.setPosition(lineStartPos);
-  c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
-  c.removeSelectedText();
-  // Escribir nueva línea
-  c.insertText(text);
-  editor->setTextCursor(c);
-  currentLine = text;
-}
-
-void Terminal::onEnter() {
-  // Evitar Enter en medio de la línea
-  QTextCursor c = editor->textCursor();
-  c.movePosition(QTextCursor::End);
-  editor->setTextCursor(c);
-  QString cmd = currentLine.trimmed();
-  // Guardar en historial si no está vacío
-  if (!cmd.isEmpty()) historial.append(cmd);
-  indiceHistorial = -1;  // reset historial
-  processCommand(cmd);
-  printPrompt();
-}
-
-// Cursor
-void Terminal::forceCursorToEnd() {
-  QTextCursor c = editor->textCursor();
-  if (c.position() < lineStartPos)
-    c.setPosition(editor->document()->characterCount() - 1);
-  editor->setTextCursor(c);
 }

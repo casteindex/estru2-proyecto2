@@ -18,9 +18,8 @@ class Terminal : public QWidget {
   ~Terminal();
 
  private slots:
-  void onTextTyped(const QString& t);
-  void onBackspace();
   void onEnter();
+  void onBackspace();
   void onArrowLeft();
   void onArrowRight();
   void onArrowUp();
@@ -31,7 +30,6 @@ class Terminal : public QWidget {
   TerminalEdit* editor;
 
   QString prompt = ">";
-  QString currentLine;
   int lineStartPos = 0;  // límite del prompt
 
   QList<QString> historial;
@@ -40,5 +38,4 @@ class Terminal : public QWidget {
   void printPrompt();
   void setLineText(const QString& text);
   void processCommand(const QString& cmd);
-  void forceCursorToEnd();
 };

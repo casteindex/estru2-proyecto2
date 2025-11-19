@@ -7,9 +7,7 @@ TerminalEdit::TerminalEdit(QWidget* parent) : QPlainTextEdit(parent) {}
 void TerminalEdit::keyPressEvent(QKeyEvent* event) {
   switch (event->key()) {
     case Qt::Key_Return:
-    case Qt::Key_Enter:
-      emit enterPressed();
-      return;
+    case Qt::Key_Enter: emit enterPressed(); return;
 
     case Qt::Key_Backspace: emit backspacePressed(); return;
     case Qt::Key_Up: emit arrowUpPressed(); return;
@@ -19,51 +17,22 @@ void TerminalEdit::keyPressEvent(QKeyEvent* event) {
 
     case Qt::Key_Home: return;
     case Qt::Key_PageUp: return;
-  }
 
-  // Texto normal -> solo emitir si es imprimible
-  const QString t = event->text();
-  if (!t.isEmpty() && t.at(0).isPrint()) {
-    emit textTyped(t);
-    return;
-  }
-
-  // Cualquier otra tecla usa comportamiento normal
-  QPlainTextEdit::keyPressEvent(event);
-}
-
-// Permitir que el usuario pegue contenido a la terminal
-void TerminalEdit::insertFromMimeData(const QMimeData* source) {
-  // Obtener el texto del portapapeles
-  QString pasted = source->text();
-  if (pasted.isEmpty()) return;
-
-  // Emitirlo caracter por caracter
-  for (QChar c : pasted) {
-    if (c.isPrint())
-      emit textTyped(QString(c));
-    else if (c == '\n' || c == '\r')
-      emit enterPressed();  // permite pegar comandos multilínea si quisieras
+    default: QPlainTextEdit::keyPressEvent(event);
   }
 }
 
-// Bloquear el mouse para que el usuario no pueda mover el cursor haciendo click
-// pero sí permitir que seleccione el texto de la línea actual
+// Bloquear el mouse completamente para evitar que el usuario pueda mover el
+// cursor haciendo click
 void TerminalEdit::mousePressEvent(QMouseEvent* event) {
-  QPlainTextEdit::mousePressEvent(event);  // permite selección
-  emit requestCursorFix();                 // avisar a la terminal
+  event->ignore();
 }
-
 void TerminalEdit::mouseReleaseEvent(QMouseEvent* event) {
-  QPlainTextEdit::mouseReleaseEvent(event);
-  emit requestCursorFix();
+  event->ignore();
 }
-
 void TerminalEdit::mouseMoveEvent(QMouseEvent* event) {
-  QPlainTextEdit::mouseMoveEvent(event);
-  emit requestCursorFix();
+  event->ignore();
 }
-
 void TerminalEdit::mouseDoubleClickEvent(QMouseEvent* event) {
   event->ignore();
 }
