@@ -31,13 +31,14 @@ class Terminal : public QWidget {
   TerminalEdit* editor;
 
   QString prompt = ">";
-  QString currentLine;   // buffer actual
+  QString currentLine;
   int lineStartPos = 0;  // límite del prompt
 
   QList<QString> historial;
-  int historyIndex = -1;  // -1 = escribiendo línea nueva
+  int indiceHistorial = -1;  // -1 = escribiendo línea nueva
 
   void printPrompt();
   void setLineText(const QString& text);
   void processCommand(const QString& cmd);
+  void forceCursorToEnd();
 };
