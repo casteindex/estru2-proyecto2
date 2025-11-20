@@ -1,9 +1,13 @@
 #include "terminal.h"
-
 #include "ui_terminal.h"
 
 Terminal::Terminal(QWidget* parent)
-    : QWidget(parent), ui(new Ui::Terminal) {
+    : QWidget(parent),
+      ui(new Ui::Terminal),
+      currentDir(QDir::homePath()),
+      lineStartPos(0),     // límite del prompt
+      indiceHistorial(-1)  // -1 = escribiendo línea nueva
+{
   ui->setupUi(this);
   editor = ui->plainTextEdit;
 
@@ -29,14 +33,20 @@ Terminal::~Terminal() {
 
 // -------------------- Funciones ---------------
 void Terminal::processCommand(const QString& linea) {
-  if (linea == "") return;
+  if (linea.trimmed().isEmpty()) return;
 
-  // Crear un arreglo de partes de la línea ingresada por el usuario
-  // usando el espacio como separador
-  QStringList partes = linea.split(' ', Qt::SkipEmptyParts);
-  QString cmd = partes[0];           // comando principal
-  QStringList args = partes.mid(1);  // todos los argumentos
+  // Obtener la lista de argumentos
+  QStringList partes = QProcess::splitCommand(linea);
+  if (partes.isEmpty()) return;
 
+  QString cmd = partes.first();      // Comando principal
+  QStringList args = partes.mid(1);  // Elementos restantes son los argumentos
+
+  // qDebug() << "Argumentos de " << cmd << ":";
+  // for (const QString& arg : args)
+  //   qDebug() << "  - " << arg;
+
+  // --- Lógica del comando ---
   if (cmd == "clear") {
     editor->clear();
     return;
@@ -44,9 +54,33 @@ void Terminal::processCommand(const QString& linea) {
     QApplication::quit();
     return;
   } else if (cmd == "cd") {
+    processCd(args);
   } else {
     editor->appendPlainText("Comando '" + cmd + "' no reconocido.");
   }
+}
+
+void Terminal::processCd(const QStringList& args) {
+  if (args.isEmpty()) {  // cd solo = ir al home
+    currentDir = QDir(QDir::homePath());
+    return;
+  }
+  QString path = args.first();
+  // Manejar caso especial: si está en el directorio raíz y se pone "cd .."
+  if (path == ".." && currentDir.isRoot()) {
+    editor->appendPlainText("\n");
+    return;
+  }
+  QDir tempDir = currentDir;
+  // Nota: cd() ya maneja automáticamente ".", "..", rutas relativas, rutas
+  // absolutas y comillas ya procesadas por splitCommand()
+  if (!tempDir.cd(path)) {
+    editor->appendPlainText("El sistema no puede encontrar la ruta especificada.");
+    return;
+  }
+  currentDir = tempDir;
+  editor->appendPlainText("\n");
+  qDebug() << "CurrentDir: " << currentDir.absolutePath();
 }
 
 // -------------------- Procesamiento de comandos ---------------
@@ -81,6 +115,7 @@ void Terminal::setLineText(const QString& text) {
 }
 
 void Terminal::printPrompt() {
+  prompt = currentDir.absolutePath() + ">";
   editor->appendPlainText(prompt);
   lineStartPos = editor->toPlainText().length();
   // currentLine.clear();

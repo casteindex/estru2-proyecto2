@@ -1,6 +1,7 @@
 #pragma once
 #include <QDebug>
 #include <QDir>
+#include <QProcess>
 #include <QTextCursor>
 #include <QWidget>
 
@@ -28,14 +29,16 @@ class Terminal : public QWidget {
  private:
   Ui::Terminal* ui;
   TerminalEdit* editor;
+  QDir currentDir;
 
-  QString prompt = ">";
-  int lineStartPos = 0;  // límite del prompt
+  QString prompt;
+  int lineStartPos;
 
   QList<QString> historial;
-  int indiceHistorial = -1;  // -1 = escribiendo línea nueva
+  int indiceHistorial;
 
   void printPrompt();
   void setLineText(const QString& text);
   void processCommand(const QString& cmd);
+  void processCd(const QStringList& args);
 };
