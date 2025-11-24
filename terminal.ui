@@ -28,11 +28,13 @@
      <property name="font">
       <font>
        <family>Consolas</family>
-       <pointsize>13</pointsize>
+       <pointsize>12</pointsize>
       </font>
      </property>
      <property name="styleSheet">
-      <string notr="true">background-color: black; color: white;</string>
+      <string notr="true">background-color: transparent;
+color: white;
+border: none;</string>
      </property>
     </widget>
    </item>

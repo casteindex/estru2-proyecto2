@@ -24,6 +24,7 @@ Terminal::Terminal(QWidget* parent)
   connect(editor, &TerminalEdit::arrowUpPressed, this, &Terminal::onArrowUp);
   connect(editor, &TerminalEdit::arrowDownPressed, this, &Terminal::onArrowDown);
 
+  editor->appendPlainText("Sistema de Archivos\nAlejandro Castellanos  - 12441410\n");
   printPrompt();  // Mostrar primer prompt
 }
 
@@ -55,32 +56,58 @@ void Terminal::processCommand(const QString& linea) {
     return;
   } else if (cmd == "cd") {
     processCd(args);
-  } else {
-    editor->appendPlainText("Comando '" + cmd + "' no reconocido.");
+  } else if (cmd == "ls") {
+    processLs();
+  } else if (cmd == "mkdisk") {
+    DiskManager::mkdisk(args, editor, currentDir);
+  } else if (cmd == "rmdisk") {
+    DiskManager::rmdisk(args, editor, currentDir);
+  }
+
+  else {
+    editor->appendPlainText("Comando '" + cmd + "' no reconocido.\n");
   }
 }
 
 void Terminal::processCd(const QStringList& args) {
   if (args.isEmpty()) {  // cd solo = ir al home
     currentDir = QDir(QDir::homePath());
+    editor->appendPlainText("");  // agregar línea vacía
     return;
   }
   QString path = args.first();
-  // Manejar caso especial: si está en el directorio raíz y se pone "cd .."
+  // Caso especial: si está en el directorio raíz y se pone "cd .."
   if (path == ".." && currentDir.isRoot()) {
-    editor->appendPlainText("\n");
+    editor->appendPlainText("");
     return;
   }
   QDir tempDir = currentDir;
   // Nota: cd() ya maneja automáticamente ".", "..", rutas relativas, rutas
   // absolutas y comillas ya procesadas por splitCommand()
   if (!tempDir.cd(path)) {
-    editor->appendPlainText("El sistema no puede encontrar la ruta especificada.");
+    editor->appendPlainText(
+      "El sistema no puede encontrar la ruta especificada.\n");
     return;
   }
   currentDir = tempDir;
-  editor->appendPlainText("\n");
-  qDebug() << "CurrentDir: " << currentDir.absolutePath();
+  editor->appendPlainText("");
+}
+
+void Terminal::processLs() {
+  // Obtener lista de archivos y carpetas del directorio actual
+  QFileInfoList entries = currentDir.entryInfoList(
+      QDir::NoDotAndDotDot | QDir::AllEntries,
+      QDir::DirsFirst | QDir::Name);
+  if (entries.isEmpty()) {
+    editor->appendPlainText("");
+    return;
+  }
+  QStringList output;
+  for (const QFileInfo& info : entries)
+    output << "- " + info.fileName();
+
+  editor->appendPlainText(output.join('\n'));
+  editor->appendPlainText("");
 }
 
 // -------------------- Procesamiento de comandos ---------------
@@ -115,7 +142,7 @@ void Terminal::setLineText(const QString& text) {
 }
 
 void Terminal::printPrompt() {
-  prompt = currentDir.absolutePath() + ">";
+  prompt = currentDir.absolutePath() + ">>";
   editor->appendPlainText(prompt);
   lineStartPos = editor->toPlainText().length();
   // currentLine.clear();

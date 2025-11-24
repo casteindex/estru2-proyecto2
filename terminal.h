@@ -5,6 +5,7 @@
 #include <QTextCursor>
 #include <QWidget>
 
+#include "diskmanager.h"
 #include "terminaledit.h"
 
 namespace Ui {
@@ -41,4 +42,5 @@ class Terminal : public QWidget {
   void setLineText(const QString& text);
   void processCommand(const QString& cmd);
   void processCd(const QStringList& args);
+  void processLs();
 };
