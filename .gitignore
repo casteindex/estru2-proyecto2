@@ -80,3 +80,10 @@ CMakeLists.txt.user*
 .rcc/
 .uic/
 /build*/
+
+# Archivos creados por Flex y Bison
+parser.cpp
+parser.h
+scanner.cpp
+lex.yy.c
+lex.yy.cpp

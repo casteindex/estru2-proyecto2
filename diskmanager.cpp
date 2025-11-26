@@ -11,9 +11,9 @@ using namespace std;
 void DiskManager::mkdisk(
   const QStringList& args, QPlainTextEdit* out, const QDir& currentDir) {
   long sizeBytes = 0;
-  char fit = 'F';
+  char fit = 'F';      // Primer ajuste por defecto
+  QString unit = "m";  // Megabytes por defecto
   QString rawPath;
-  QString unit = "m";
 
   // Comprobar si se pasaron todos los argumentos obligatorios. Nota: los
   // parámetros se pasan por referencia, la función cambia los valores por
