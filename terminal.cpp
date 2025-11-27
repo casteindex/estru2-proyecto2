@@ -4,7 +4,7 @@
 Terminal::Terminal(QWidget* parent)
     : QWidget(parent),
       ui(new Ui::Terminal),
-      currentDir(QDir::homePath()),
+      currentDir(QDir::homePath().append("/Z")),
       lineStartPos(0),     // límite del prompt
       indiceHistorial(-1)  // -1 = escribiendo línea nueva
 {
@@ -24,7 +24,8 @@ Terminal::Terminal(QWidget* parent)
   connect(editor, &TerminalEdit::arrowUpPressed, this, &Terminal::onArrowUp);
   connect(editor, &TerminalEdit::arrowDownPressed, this, &Terminal::onArrowDown);
 
-  editor->appendPlainText("Sistema de Archivos\nAlejandro Castellanos  - 12441410\n");
+  editor->setCursorWidth(editor->fontMetrics().averageCharWidth());
+  printEncabezado();
   printPrompt();  // Mostrar primer prompt
 }
 
@@ -192,4 +193,22 @@ void Terminal::onArrowDown() {
     indiceHistorial = -1;
     setLineText("");
   }
+}
+
+void Terminal::printEncabezado() const {
+  const int largoLinea = 97;
+  const int largoTitulo = 19;  // Sistema de archivos
+  const int largoNombre = 32;  // Alejandro Castellanos - 12441410
+  const int largoEspacios = (largoLinea - largoTitulo - 2) / 2;  // 2*"|"
+
+  QString encabezado;
+  encabezado += QString("-").repeated(largoLinea) + "\n";
+  encabezado += "|" + QString(" ").repeated(largoEspacios);
+  encabezado += "Sistema de Archivos";
+  encabezado += QString(" ").repeated(largoEspacios) + "|\n";
+  encabezado += QString("-").repeated(largoLinea) + "\n";
+  encabezado += QString(" ").repeated(largoLinea - largoNombre);
+  encabezado += "Alejandro Castellanos - 12441410\n";
+
+  editor->appendPlainText(encabezado);
 }

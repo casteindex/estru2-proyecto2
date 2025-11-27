@@ -43,4 +43,5 @@ class Terminal : public QWidget {
   void processCommand(const QString& cmd);
   void processCd(const QStringList& args);
   void processLs();
+  void printEncabezado() const;
 };

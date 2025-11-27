@@ -27,9 +27,6 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         terminaledit.h
         terminaledit.cpp
         diskmanager.h diskmanager.cpp
-        
-        ${FLEX_Scanner_OUTPUTS}
-        ${BISON_Parser_OUTPUTS} 
     )
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET Proyecto2 APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
@@ -48,29 +45,6 @@ else()
         )
     endif()
 endif()
-
-#
-# === FLEX & BISON ===
-#
-find_package(FLEX REQUIRED)
-find_package(BISON REQUIRED)
-
-# Generar scanner (lexer)
-FLEX_TARGET(
-    Scanner                   # nombre interno
-    ${CMAKE_CURRENT_SOURCE_DIR}/scanner.l   # archivo .l
-    ${CMAKE_CURRENT_BINARY_DIR}/scanner.cpp # archivo generado
-)
-
-# Generar parser (sintáctico)
-BISON_TARGET(
-    Parser
-    ${CMAKE_CURRENT_SOURCE_DIR}/parser.y
-    ${CMAKE_CURRENT_BINARY_DIR}/parser.cpp
-)
-
-# Asegurar que parser se genere después del scanner si fuera necesario
-ADD_FLEX_BISON_DEPENDENCY(Scanner Parser)
 
 target_link_libraries(Proyecto2 PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
 
@@ -100,5 +74,5 @@ if(QT_VERSION_MAJOR EQUAL 6)
 endif()
 
 target_include_directories(Proyecto2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(Proyecto2 PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
 
