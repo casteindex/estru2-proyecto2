@@ -4,6 +4,7 @@
 #include <QProcess>
 #include <QTextCursor>
 #include <QWidget>
+#include <vector>
 
 #include "diskmanager.h"
 #include "terminaledit.h"
@@ -18,6 +19,12 @@ class Terminal : public QWidget {
  public:
   explicit Terminal(QWidget* parent = nullptr);
   ~Terminal();
+  bool esperandoConfirmacion = false;
+  QString prompt;
+  void printPrompt();
+
+ signals:
+  void confirmacionRecibida(char r);
 
  private slots:
   void onEnter();
@@ -32,13 +39,12 @@ class Terminal : public QWidget {
   TerminalEdit* editor;
   QDir currentDir;
 
-  QString prompt;
   int lineStartPos;
 
-  QList<QString> historial;
+  std::vector<QString> historial;
   int indiceHistorial;
 
-  void printPrompt();
+  // void printPrompt();
   void setLineText(const QString& text);
   void processCommand(const QString& cmd);
   void processCd(const QStringList& args);

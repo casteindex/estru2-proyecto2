@@ -5,6 +5,7 @@ Terminal::Terminal(QWidget* parent)
     : QWidget(parent),
       ui(new Ui::Terminal),
       currentDir(QDir::homePath().append("/Z")),
+      prompt(">> "),
       lineStartPos(0),     // límite del prompt
       indiceHistorial(-1)  // -1 = escribiendo línea nueva
 {
@@ -59,10 +60,10 @@ void Terminal::processCommand(const QString& linea) {
     processCd(args);
   } else if (cmd == "ls") {
     processLs();
-  } else if (cmd == "mkdisk") {
+  } else if (cmd.toLower() == "mkdisk") {
     DiskManager::mkdisk(args, editor, currentDir);
-  } else if (cmd == "rmdisk") {
-    DiskManager::rmdisk(args, editor, currentDir);
+  } else if (cmd.toLower() == "rmdisk") {
+    DiskManager::rmdisk(args, editor, currentDir, this);
   }
 
   else {
@@ -71,27 +72,35 @@ void Terminal::processCommand(const QString& linea) {
 }
 
 void Terminal::processCd(const QStringList& args) {
-  if (args.isEmpty()) {  // cd solo = ir al home
-    currentDir = QDir(QDir::homePath());
-    editor->appendPlainText("");  // agregar línea vacía
+  // Debe haber exactamente un argumento
+  if (args.size() != 1) {
+    editor->appendPlainText("Este comando solo acepta el parámetro -path.\n");
     return;
   }
-  QString path = args.first();
-  // Caso especial: si está en el directorio raíz y se pone "cd .."
+  QString arg = args.first();
+  if (!arg.startsWith("-path=")) {
+    editor->appendPlainText("Falta parámetro path.\n");
+    return;
+  }
+  QString path = arg.mid(6);  // extraer lo que viene después de -path=
+  // Casos especiales: 1. si -path="" o -path=, ir a homePath,
+  // 2. si está en el directorio raíz y hace -path=.., no hacer nada
+  if (path == "") currentDir = QDir(QDir::homePath());
   if (path == ".." && currentDir.isRoot()) {
     editor->appendPlainText("");
     return;
   }
-  QDir tempDir = currentDir;
   // Nota: cd() ya maneja automáticamente ".", "..", rutas relativas, rutas
   // absolutas y comillas ya procesadas por splitCommand()
+  QDir tempDir = currentDir;
   if (!tempDir.cd(path)) {
     editor->appendPlainText(
       "El sistema no puede encontrar la ruta especificada.\n");
     return;
   }
-  currentDir = tempDir;
-  editor->appendPlainText("");
+  currentDir = tempDir;  // sí se encontró la ruta
+  editor->appendPlainText(
+    "Directorio actual actualizado a: " + currentDir.path() + "\n");
 }
 
 void Terminal::processLs() {
@@ -107,6 +116,7 @@ void Terminal::processLs() {
   for (const QFileInfo& info : entries)
     output << "- " + info.fileName();
 
+  editor->appendPlainText("Directorio actual: " + currentDir.absolutePath());
   editor->appendPlainText(output.join('\n'));
   editor->appendPlainText("");
 }
@@ -120,11 +130,21 @@ void Terminal::onEnter() {
   QString fullText = editor->toPlainText();
   QString cmd = fullText.mid(lineStartPos).trimmed();
 
-  if (!cmd.isEmpty())
-    historial.append(cmd);
+  if (esperandoConfirmacion) {
+    char r;
+    if (cmd.compare("y", Qt::CaseInsensitive) == 0) r = 'y';
+    else if (cmd.compare("n", Qt::CaseInsensitive) == 0) r = 'n';
+    else r = 'e';  // inválido
+    esperandoConfirmacion = false;
+    emit confirmacionRecibida(r);
+    prompt = ">> ";
+    printPrompt();
+    return;  // no procesar otros comandos mientras se esperaba confirmación
+  }
+
+  if (!cmd.isEmpty()) historial.push_back(cmd);
 
   indiceHistorial = -1;
-
   processCommand(cmd);
   printPrompt();
 }
@@ -143,11 +163,8 @@ void Terminal::setLineText(const QString& text) {
 }
 
 void Terminal::printPrompt() {
-  prompt = currentDir.absolutePath() + ">>";
   editor->appendPlainText(prompt);
   lineStartPos = editor->toPlainText().length();
-  // currentLine.clear();
-  // Asegurar que el cursor quede al final
   QTextCursor c = editor->textCursor();
   c.movePosition(QTextCursor::End);
   editor->setTextCursor(c);
@@ -175,18 +192,17 @@ void Terminal::onArrowRight() {
 }
 
 void Terminal::onArrowUp() {
-  if (historial.isEmpty()) return;
-  if (indiceHistorial == -1)
-    indiceHistorial = historial.length() - 1;
+  if (historial.empty()) return;
+  if (indiceHistorial == -1) indiceHistorial = historial.size() - 1;
   else if (indiceHistorial > 0)
     indiceHistorial--;
   setLineText(historial[indiceHistorial]);
 }
 
 void Terminal::onArrowDown() {
-  if (historial.isEmpty()) return;
+  if (historial.empty()) return;
   if (indiceHistorial == -1) return;
-  if (indiceHistorial < historial.length() - 1) {
+  if (indiceHistorial < historial.size() - 1) {
     indiceHistorial++;
     setLineText(historial[indiceHistorial]);
   } else {  // volver a línea vacía
@@ -209,6 +225,7 @@ void Terminal::printEncabezado() const {
   encabezado += QString("-").repeated(largoLinea) + "\n";
   encabezado += QString(" ").repeated(largoLinea - largoNombre);
   encabezado += "Alejandro Castellanos - 12441410\n";
+  encabezado += "\nPor favor escriba algún comando:";
 
   editor->appendPlainText(encabezado);
 }

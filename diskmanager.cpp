@@ -5,6 +5,8 @@
 #include <QFileInfo>
 #include <fstream>
 
+#include "terminal.h"
+
 using namespace std;
 
 // -------------------------------------------------------
@@ -148,8 +150,8 @@ bool DiskManager::writeInitialMBR(
 
 // -------------------------------------------------------
 // ----------------------- RMDISK ------------------------
-void DiskManager::rmdisk(
-  const QStringList& args, QPlainTextEdit* out, const QDir& currentDir) {
+void DiskManager::rmdisk(const QStringList& args, QPlainTextEdit* out,
+  const QDir& currentDir, Terminal* terminal) {
   if (args.isEmpty()) {
     out->appendPlainText("Falta parámetro path.\n");
     return;
@@ -162,20 +164,46 @@ void DiskManager::rmdisk(
     out->appendPlainText("Falta parámetro path.\n");
     return;
   }
-
   // Resolver path relativo según currentDir
   QDir base = currentDir;
   QString finalPath = base.absoluteFilePath(rawPath);
-  QFile file(finalPath);
-  if (!file.exists()) {
+  if (!finalPath.endsWith(".disk")) {
+    out->appendPlainText("Extensión de disco inválida.\n");
+    return;
+  }
+
+  QFile* file = new QFile(
+    finalPath);  // Debe ser puntero para poder usarse en la función lambda
+  if (!file->exists()) {
     out->appendPlainText("El archivo no existe.\n");
     return;
   }
-  if (!file.remove()) {
-    out->appendPlainText("No se pudo eliminar el archivo.\n");
-    return;
-  }
-  out->appendPlainText("Disco eliminado con éxito.\n");
+
+  // Confirmar si en verdad desea borrar el archivo
+  terminal->esperandoConfirmacion = true;  // activar confirmación
+  terminal->prompt = ">> ¿Seguro que desea eliminar el disco? Y/N: ";
+
+  // Conectar la señal de confirmación a un lambda que maneja la respuesta
+  // Nota: la función lambda se llama cuando se reciba la señal de confirmación
+  // [=] captura por valor todas las variables externas (crea copias)
+  // mutable permite modificar las variables capturadas por valor en el lambda
+  QObject::connect(
+    terminal, &Terminal::confirmacionRecibida, terminal, [=](char r) mutable {
+      if (r == 'y') {
+        if (!file->remove())
+          out->appendPlainText("No se pudo eliminar el archivo.\n");
+        else out->appendPlainText("Disco eliminado con éxito.\n");
+      } else if (r == 'n') {
+        out->appendPlainText("Operación cancelada.\n");
+      } else {
+        out->appendPlainText("Entrada inválida. Operación cancelada.\n");
+      }
+      file->deleteLater();  // limpiar (método de Qt)
+      terminal->esperandoConfirmacion = false;
+      // Desconectar lambda después de usar
+      QObject::disconnect(
+        terminal, &Terminal::confirmacionRecibida, nullptr, nullptr);
+    });
 }
 
 // -------------------------------------------------------
