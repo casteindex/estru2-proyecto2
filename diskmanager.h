@@ -62,8 +62,9 @@ class DiskManager {
 
   static bool crearPrimaria(const QString& path, const QString& name,
     long sizeBytes, char fit, QPlainTextEdit* out);
+  static bool crearExtendida(const QString& path, const QString& name,
+    long sizeBytes, char fit, QPlainTextEdit* out);
 
-  static bool crearExtendida();
   static bool creaLogica();
   static bool deleteParticion();
   static bool addAParticion();

@@ -252,7 +252,7 @@ void DiskManager::fdisk(
       else out->appendPlainText("Error al crear partición primaria.\n");
       break;
     case 'E':
-      if (crearExtendida())
+      if (crearExtendida(finalPath, name, sizeBytes, fit, out))
         out->appendPlainText("...\nPartición extendida creada con éxito.\n");
       else out->appendPlainText("Error al crear partición extendida.\n");
       break;
@@ -264,56 +264,98 @@ void DiskManager::fdisk(
   }
 }
 
-bool DiskManager::crearPrimaria(const QString& path, const QString& name,
-  long sizeBytes, char fit, QPlainTextEdit* out) {
-  std::fstream file(
-    path.toStdString(), std::ios::in | std::ios::out | std::ios::binary);
-  if (!file.is_open()) {
-    out->appendPlainText("No se pudo abrir el disco.");
-    return false;
-  }
+bool haySlotDisponible(const MBR& mbr) {
+  for (const auto& p : mbr.parts)
+    if (p.status == 0) return true;
+  return false;
+}
 
-  // Leer MBR
-  MBR mbr;
-  file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
-  // Asegurarse de que no existan dos particiones con el mismo nombre
+std::vector<Partition> obtenerParticionesUsadasOrdenadas(const MBR& mbr) {
+  std::vector<Partition> usadas;
+  for (int i = 0; i < 4; i++)
+    if (mbr.parts[i].status == 1) usadas.push_back(mbr.parts[i]);
+  std::sort(usadas.begin(), usadas.end(),
+    [](const Partition& a, const Partition& b) { return a.start < b.start; });
+  return usadas;
+}
+
+std::vector<Hueco> calcularHuecos(
+  const std::vector<Partition>& usadas, int mbrSize) {
+  std::vector<Hueco> huecos;
+  int cursor = sizeof(MBR);
+  for (const auto& p : usadas) {
+    if (cursor < p.start) huecos.push_back({cursor, p.start - cursor});
+    cursor = p.start + p.size;
+  }
+  if (cursor < mbrSize) huecos.push_back({cursor, mbrSize - cursor});
+  return huecos;
+}
+
+Hueco elegirHueco(const std::vector<Hueco>& huecos, long sizeBytes, char fit) {
+  Hueco elegido{-1, -1};
+  if (fit == 'F') {  // First Fit
+    for (const auto& h : huecos)
+      if (h.tam >= sizeBytes) {
+        elegido = h;
+        break;
+      }
+  } else if (fit == 'B') {  // Best Fit
+    int best = INT_MAX;
+    for (const auto& h : huecos)
+      if (h.tam >= sizeBytes && h.tam < best) {
+        best = h.tam;
+        elegido = h;
+      }
+  } else if (fit == 'W') {  // Worst Fit
+    elegido = *std::max_element(huecos.begin(), huecos.end(),
+      [](const Hueco& a, const Hueco& b) { return a.tam < b.tam; });
+  }
+  return elegido;
+}
+
+bool revisarNombreUnicoYExtendida(
+  const MBR& mbr, const QString& name, char type, QPlainTextEdit* out) {
   for (const auto& p : mbr.parts) {
+    if (type == 'E' && p.status == 1 && p.type == 'E') {
+      out->appendPlainText("Ya existe una partición extendida en el disco.");
+      return false;
+    }
     if (p.status == 1 && name == p.name) {
       out->appendPlainText("Ya existe una partición con ese nombre.");
       return false;
     }
   }
+  return true;
+}
 
-  // Recorrer las 4 particiones existentes
-  // Primero, obtener las particiones existentes ordenadas por start
-  std::vector<Hueco> huecos;
-  std::vector<Partition> usadas;
+bool insertarParticionEnMBR(MBR& mbr, const QString& name, char type, char fit,
+  long sizeBytes, int inicio) {
+  int slot = -1;
   for (int i = 0; i < 4; i++) {
-    if (mbr.parts[i].status == 1) usadas.push_back(mbr.parts[i]);
-  }
-  std::sort(usadas.begin(), usadas.end(),
-    [](const Partition& a, const Partition& b) { return a.start < b.start; });
-
-  int cursor = sizeof(MBR);  // primer byte libre después del MBR
-  // Huecos entre particiones
-  for (const auto& p : usadas) {
-    if (cursor < p.start) {
-      int tam = p.start - cursor;
-      huecos.push_back({cursor, tam});  // struct: inicio, tamaño
+    if (mbr.parts[i].status == 0) {
+      slot = i;
+      break;
     }
-    cursor = p.start + p.size;
   }
-  // Hueco final
-  if (cursor < mbr.size) {
-    int tam = mbr.size - cursor;
-    huecos.push_back({cursor, tam});
-  }
+  if (slot == -1) return false;
+  Partition& p = mbr.parts[slot];
+  p.status = 1;
+  p.type = type;
+  p.fit = fit;
+  p.start = inicio;
+  p.size = sizeBytes;
+  std::memset(p.name, 0, sizeof(p.name));
+  strncpy(p.name, name.toStdString().c_str(), sizeof(p.name) - 1);
+  return true;
+}
 
-  // Obtener el hueco más grande (para mostrar su size en pantalla)
+// ------------------ Mostrar espacio -------------------
+bool mostrarEspacioDisponible(
+  const std::vector<Hueco>& huecos, long sizeBytes, QPlainTextEdit* out) {
   int maxHueco = 0;
-  for (const auto& h : huecos) {
+  for (const auto& h : huecos)
     if (h.tam > maxHueco) maxHueco = h.tam;
-  }
+
   out->appendPlainText(
     "Espacio disponible: " + QString::number(maxHueco) + " Bytes");
   out->appendPlainText(
@@ -323,69 +365,65 @@ bool DiskManager::crearPrimaria(const QString& path, const QString& name,
     out->appendPlainText("...\nNo hay espacio suficiente.");
     return false;
   }
+  return true;
+}
 
-  // Elegir hueco según el Fit elegido
-  Hueco elegido{-1, -1};
-  if (fit == 'F') {  // First Fit
-    for (const auto& h : huecos) {
-      if (h.tam >= sizeBytes) {
-        elegido = h;
-        break;
-      }
-    }
-  } else if (fit == 'B') {  // Best Fit
-    int best = INT_MAX;
-    for (const auto& h : huecos) {
-      if (h.tam >= sizeBytes && h.tam < best) {
-        best = h.tam;
-        elegido = h;
-      }
-    }
-  } else if (fit == 'W') {  // Worst Fit
-    elegido = {*std::max_element(huecos.begin(), huecos.end(),
-      [](const Hueco& a, const Hueco& b) { return a.tam < b.tam; })};
+bool crearParticionGenerica(const QString& path, const QString& name, char type,
+  long sizeBytes, char fit, QPlainTextEdit* out) {
+  std::fstream file(
+    path.toStdString(), std::ios::in | std::ios::out | std::ios::binary);
+  if (!file.is_open()) {
+    out->appendPlainText("No se pudo abrir el disco.");
+    return false;
   }
+  MBR mbr;
+  file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+  // Validar que haya slots antes de revisar nombre, espacio, etc.
+  if (!haySlotDisponible(mbr)) {
+    out->appendPlainText("No hay slots de partición disponibles.");
+    return false;
+  }
+  if (!revisarNombreUnicoYExtendida(mbr, name, type, out)) return false;
+
+  // Obtener particiones usadas y sus respectivos huecos
+  std::vector<Partition> usadas = obtenerParticionesUsadasOrdenadas(mbr);
+  std::vector<Hueco> huecos = calcularHuecos(usadas, mbr.size);
+
+  // Mostrar espacio disponible solo si SÍ hay slots
+  if (!mostrarEspacioDisponible(huecos, sizeBytes, out)) return false;
+
+  // Elegir hueco según fit
+  Hueco elegido = elegirHueco(huecos, sizeBytes, fit);
   if (elegido.inicio == -1) {
     out->appendPlainText("...\nNo se encontró un hueco adecuado según el fit.");
     return false;
   }
-
-  // Insertar en el MBR (slot libre)
-  int slot = -1;
-  for (int i = 0; i < 4; i++) {
-    if (mbr.parts[i].status == 0) {
-      slot = i;
-      break;
-    }
-  }
-  if (slot == -1) {
-    out->appendPlainText(
-      "...\nNo hay slots de partición primaria disponibles.");
+  // Insertar en MBR
+  if (!insertarParticionEnMBR(
+        mbr, name, type, fit, sizeBytes, elegido.inicio)) {
+    out->appendPlainText("...\nNo hay slots de partición disponibles.");
     return false;
   }
-
-  Partition& p = mbr.parts[slot];
-  p.status = 1;
-  p.type = 'P';
-  p.fit = fit;
-  p.start = elegido.inicio;
-  p.size = sizeBytes;
-  std::memset(p.name, 0, sizeof(p.name));
-  strncpy(p.name, name.toStdString().c_str(), sizeof(p.name) - 1);
-
-  // Reescribir el MBR
   file.seekp(0);
   file.write(reinterpret_cast<char*>(&mbr), sizeof(MBR));
   file.close();
   return true;
 }
 
-bool DiskManager::crearExtendida() {
-  return 1;
+bool DiskManager::crearPrimaria(const QString& path, const QString& name,
+  long sizeBytes, char fit, QPlainTextEdit* out) {
+  return crearParticionGenerica(path, name, 'P', sizeBytes, fit, out);
 }
+
+bool DiskManager::crearExtendida(const QString& path, const QString& name,
+  long sizeBytes, char fit, QPlainTextEdit* out) {
+  return crearParticionGenerica(path, name, 'E', sizeBytes, fit, out);
+}
+
 bool DiskManager::creaLogica() {
   return 1;
 }
+
 bool DiskManager::deleteParticion() {
   return 1;
 }
