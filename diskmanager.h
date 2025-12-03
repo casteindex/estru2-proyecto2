@@ -6,37 +6,6 @@
 #include <cstring>
 class Terminal;
 
-// ----------------------- Structs ------------------------
-struct Partition {
-  char status;    // 0 = libre, 1 = usada
-  char type;      // P, E
-  char fit;       // B, F, W
-  int start;      // byte donde inicia
-  int size;       // tamaño en bytes
-  char name[16];  // nombre
-};
-
-struct MBR {
-  int size;            // tamaño total del disco
-  char fit;            // BF, FF, WF
-  Partition parts[4];  // 4 slots máximo
-};
-
-struct EBR {
-  char status;
-  char fit;
-  int start;
-  int size;
-  int next;
-  char name[16];
-};
-
-struct Hueco {
-  int inicio;
-  int tam;
-};
-
-// ----------------------- DiskManager ------------------------
 class DiskManager {
  public:
   DiskManager() = default;
@@ -64,8 +33,8 @@ class DiskManager {
     long sizeBytes, char fit, QPlainTextEdit* out);
   static bool crearExtendida(const QString& path, const QString& name,
     long sizeBytes, char fit, QPlainTextEdit* out);
-
-  static bool creaLogica();
+  static bool crearLogica(const QString& path, const QString& name,
+    long sizeBytes, char fit, QPlainTextEdit* out);
   static bool deleteParticion();
   static bool addAParticion();
 };

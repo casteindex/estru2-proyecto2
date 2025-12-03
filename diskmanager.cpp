@@ -9,6 +9,36 @@
 
 using namespace std;
 
+// ----------------------- Structs ------------------------
+struct Partition {
+  char status;    // 0 = libre, 1 = usada
+  char type;      // P, E
+  char fit;       // B, F, W
+  int start;      // byte donde inicia
+  int size;       // tamaño en bytes
+  char name[16];  // nombre
+};
+
+struct MBR {
+  int size;            // tamaño total del disco
+  char fit;            // BF, FF, WF
+  Partition parts[4];  // 4 slots máximo
+};
+
+struct EBR {
+  char status;
+  char fit;
+  int start;
+  int size;
+  int next;  // siguiente EBR
+  char name[16];
+};
+
+struct Hueco {
+  int inicio;
+  int tam;
+};
+
 // -------------------------------------------------------
 // ----------------------- MKDISK ------------------------
 void DiskManager::mkdisk(
@@ -257,7 +287,7 @@ void DiskManager::fdisk(
       else out->appendPlainText("Error al crear partición extendida.\n");
       break;
     case 'L':
-      if (creaLogica())
+      if (crearLogica(finalPath, name, sizeBytes, fit, out))
         out->appendPlainText("...\nPartición lógica creada con éxito.\n");
       else out->appendPlainText("Error al crear partición lógica.\n");
       break;
@@ -349,7 +379,6 @@ bool insertarParticionEnMBR(MBR& mbr, const QString& name, char type, char fit,
   return true;
 }
 
-// ------------------ Mostrar espacio -------------------
 bool mostrarEspacioDisponible(
   const std::vector<Hueco>& huecos, long sizeBytes, QPlainTextEdit* out) {
   int maxHueco = 0;
@@ -389,7 +418,7 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
   std::vector<Partition> usadas = obtenerParticionesUsadasOrdenadas(mbr);
   std::vector<Hueco> huecos = calcularHuecos(usadas, mbr.size);
 
-  // Mostrar espacio disponible solo si SÍ hay slots
+  // Mostrar espacio disponible solo si si hay slots
   if (!mostrarEspacioDisponible(huecos, sizeBytes, out)) return false;
 
   // Elegir hueco según fit
@@ -404,6 +433,22 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
     out->appendPlainText("...\nNo hay slots de partición disponibles.");
     return false;
   }
+
+  // Si se creó una partición extendida, crear el EBR inicial (inactivo)
+  if (type == 'E') {
+    EBR ebr;
+    memset(&ebr, '\0', sizeof(EBR));
+    ebr.status = 0;
+    ebr.fit = fit;
+    ebr.start = elegido.inicio;  // inicio donde empieza la extendida
+    ebr.size = 0;
+    ebr.next = -1;
+
+    file.seekp(elegido.inicio);
+    file.write(reinterpret_cast<char*>(&ebr), sizeof(EBR));
+    out->appendPlainText("Primer EBR inicial creado dentro de la extendida.\n");
+  }
+
   file.seekp(0);
   file.write(reinterpret_cast<char*>(&mbr), sizeof(MBR));
   file.close();
@@ -420,9 +465,179 @@ bool DiskManager::crearExtendida(const QString& path, const QString& name,
   return crearParticionGenerica(path, name, 'E', sizeBytes, fit, out);
 }
 
-bool DiskManager::creaLogica() {
-  return 1;
+// -------------------- Crear Partición Lógica -------------------------
+bool obtenerExtendida(const MBR& mbr, Partition& extendida) {
+  for (const auto& p : mbr.parts) {
+    if (p.status == 1 && p.type == 'E') {
+      extendida = p;
+      return true;
+    }
+  }
+  return false;
 }
+
+std::vector<EBR> leerEBRs(std::fstream& file, const Partition& extendida) {
+  std::vector<EBR> lista;
+  long pos = extendida.start;
+  while (true) {
+    EBR ebr;
+    file.seekg(pos);
+    file.read(reinterpret_cast<char*>(&ebr), sizeof(EBR));
+    if (ebr.status == 0) break;  // no hay más
+    lista.push_back(ebr);
+    if (ebr.next == -1) break;
+    pos = ebr.next;
+  }
+  return lista;
+}
+
+bool nombreLogicaDisponible(const std::vector<EBR>& ebrs, const QString& name) {
+  for (const auto& e : ebrs)
+    if (e.status == 1 && name == QString(e.name)) return false;
+  return true;
+}
+
+std::vector<Hueco> calcularHuecosEnExtendida(
+  const Partition& ext, const std::vector<EBR>& ebrs) {
+  std::vector<Hueco> huecos;
+  long inicioExt = ext.start;
+  long finExt = ext.start + ext.size;
+  if (ebrs.empty()) {
+    huecos.push_back({inicioExt, ext.size});
+    return huecos;
+  }
+  // Ordenar por start
+  std::vector<EBR> sorted = ebrs;
+  std::sort(sorted.begin(), sorted.end(),
+    [](const EBR& a, const EBR& b) { return a.start < b.start; });
+  // Hueco antes del primer EBR
+  if (sorted[0].start > inicioExt) {
+    long tam = sorted[0].start - inicioExt;
+    huecos.push_back({inicioExt, tam});
+  }
+  // Huecos entre EBRs
+  for (size_t i = 0; i < sorted.size() - 1; i++) {
+    long finActual = sorted[i].start + sorted[i].size;
+    long iniSiguiente = sorted[i + 1].start;
+
+    if (iniSiguiente > finActual) {
+      huecos.push_back({finActual, iniSiguiente - finActual});
+    }
+  }
+  // Hueco después del último EBR
+  long finUltimo = sorted.back().start + sorted.back().size;
+  if (finExt > finUltimo) {
+    huecos.push_back({finUltimo, finExt - finUltimo});
+  }
+  return huecos;
+}
+
+bool escribirNuevoEBR(std::fstream& file, const Partition& extendida,
+  const std::vector<EBR>& ebrs, long inicioNuevo, long sizeBytes, char fit,
+  const QString& name) {
+  EBR nuevo{};
+  nuevo.status = 1;
+  nuevo.fit = fit;
+  nuevo.start = inicioNuevo;
+  nuevo.size = sizeBytes;
+  strcpy_s(nuevo.name, sizeof(nuevo.name), name.toStdString().c_str());
+  nuevo.next = -1;
+
+  // Si no hay EBRs, este es el primero
+  if (ebrs.empty()) {
+    file.seekp(inicioNuevo);
+    file.write(reinterpret_cast<char*>(&nuevo), sizeof(EBR));
+    return true;
+  }
+
+  // Ubicar posición para insertar
+  std::vector<EBR> sorted = ebrs;
+  std::sort(sorted.begin(), sorted.end(),
+    [](const EBR& a, const EBR& b) { return a.start < b.start; });
+  long prevPos = -1;
+  for (const auto& e : sorted) {
+    if (e.start < inicioNuevo) prevPos = e.start;
+  }
+  if (prevPos == -1) {  // Se inserta antes del primero
+    EBR primero = sorted[0];
+    nuevo.next = primero.start;
+    file.seekp(inicioNuevo);
+    file.write(reinterpret_cast<char*>(&nuevo), sizeof(EBR));
+    return true;
+  }
+
+  // Leer el EBR anterior
+  EBR ebrAnterior;
+  file.seekg(prevPos);
+  file.read(reinterpret_cast<char*>(&ebrAnterior), sizeof(EBR));
+
+  // Actualizar next del anterior para que apunte al nuevo
+  ebrAnterior.next = inicioNuevo;
+  file.seekp(prevPos);
+  file.write(reinterpret_cast<char*>(&ebrAnterior), sizeof(EBR));
+
+  // Nuevo EBR
+  // Buscar cuál sería su siguiente
+  nuevo.next = -1;
+  for (const auto& e : sorted) {
+    if (e.start > inicioNuevo) {
+      nuevo.next = e.start;
+      break;
+    }
+  }
+  file.seekp(inicioNuevo);
+  file.write(reinterpret_cast<char*>(&nuevo), sizeof(EBR));
+  return true;
+}
+
+bool DiskManager::crearLogica(const QString& path, const QString& name,
+  long sizeBytes, char fitUser, QPlainTextEdit* out) {
+  std::fstream file(
+    path.toStdString(), std::ios::in | std::ios::out | std::ios::binary);
+  if (!file.is_open()) {
+    out->appendPlainText("No se pudo abrir el disco.");
+    return false;
+  }
+  MBR mbr;
+  file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+
+  // Obtener la partición extendida
+  Partition extendida;
+  if (!obtenerExtendida(mbr, extendida)) {
+    out->appendPlainText("No existe una partición extendida.");
+    return false;
+  }
+  // Leer EBRs existentes
+  std::vector<EBR> ebrs = leerEBRs(file, extendida);
+
+  // Verificar nombre único
+  if (!nombreLogicaDisponible(ebrs, name)) {
+    out->appendPlainText("Ya existe una partición lógica con ese nombre.");
+    return false;
+  }
+
+  // Calcular huecos dentro de la extendida
+  std::vector<Hueco> huecos = calcularHuecosEnExtendida(extendida, ebrs);
+  if (!mostrarEspacioDisponible(huecos, sizeBytes, out)) return false;
+
+  // Elegir hueco usando el Fit elegido
+  Hueco elegido = elegirHueco(huecos, sizeBytes, extendida.fit);
+  if (elegido.inicio == -1) {
+    out->appendPlainText(
+      "No se encontró un hueco adecuado dentro de la extendida.");
+    return false;
+  }
+
+  // Insertar el nuevo EBR
+  if (!escribirNuevoEBR(file, extendida, ebrs, elegido.inicio, sizeBytes,
+        extendida.fit, name)) {
+    out->appendPlainText("Error al escribir el EBR.");
+    return false;
+  }
+  out->appendPlainText("Partición lógica creada correctamente.\n");
+  return true;
+}
+// -----------------------------------------------------------------
 
 bool DiskManager::deleteParticion() {
   return 1;
