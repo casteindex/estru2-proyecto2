@@ -64,6 +64,8 @@ void Terminal::processCommand(const QString& linea) {
     DiskManager::mkdisk(args, editor, currentDir);
   } else if (cmd.toLower() == "rmdisk") {
     DiskManager::rmdisk(args, editor, currentDir, this);
+  } else if (cmd.toLower() == "fdisk") {
+    DiskManager::fdisk(args, editor, currentDir);
   }
 
   else {
@@ -108,6 +110,8 @@ void Terminal::processLs() {
   QFileInfoList entries = currentDir.entryInfoList(
       QDir::NoDotAndDotDot | QDir::AllEntries,
       QDir::DirsFirst | QDir::Name);
+
+  editor->appendPlainText("Directorio actual: " + currentDir.absolutePath());
   if (entries.isEmpty()) {
     editor->appendPlainText("");
     return;
@@ -116,7 +120,6 @@ void Terminal::processLs() {
   for (const QFileInfo& info : entries)
     output << "- " + info.fileName();
 
-  editor->appendPlainText("Directorio actual: " + currentDir.absolutePath());
   editor->appendPlainText(output.join('\n'));
   editor->appendPlainText("");
 }
