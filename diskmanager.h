@@ -35,6 +35,7 @@ class DiskManager {
     long sizeBytes, char fit, QPlainTextEdit* out);
   static bool crearLogica(const QString& path, const QString& name,
     long sizeBytes, char fit, QPlainTextEdit* out);
-  static bool deleteParticion();
+  static bool deleteParticion(
+    const QString& path, const QString& name, QPlainTextEdit* out);
   static bool addAParticion();
 };
