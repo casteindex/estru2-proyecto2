@@ -68,6 +68,8 @@ void Terminal::processCommand(const QString& linea) {
     DiskManager::fdisk(args, editor, currentDir, this);
   } else if (cmd.toLower() == "mount") {
     DiskManager::mount(args, editor, currentDir);
+  } else if (cmd.toLower() == "unmount") {
+    DiskManager::unmount(args, editor);
   }
 
   else {

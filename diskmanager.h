@@ -18,6 +18,7 @@ class DiskManager {
     const QDir& currentDir, Terminal* terminal);
   static void mount(
     const QStringList& args, QPlainTextEdit* out, const QDir& currentDir);
+  static void unmount(const QStringList& args, QPlainTextEdit* out);
 
  private:
   static bool mkdiskParams(const QStringList& args, long& sizeBytes, char& fit,

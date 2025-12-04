@@ -624,7 +624,7 @@ bool escribirNuevoEBR(std::fstream& file, const Partition& extendida,
   // Encontrar prev y next por posición física del EBR
   long prevPos = -1;
   long nextPos = -1;
-  for (size_t i = 0; i < sorted.size(); ++i) {
+  for (int i = 0; i < sorted.size(); ++i) {
     long p = sorted[i].second;
     if (p < posEBR) prevPos = p;
     if (p > posEBR && nextPos == -1) nextPos = p;
@@ -1027,10 +1027,10 @@ bool DiskManager::fdiskParams(const QStringList& args, long& sizeBytes,
 }
 
 // -------------------------------------------------------
-// ----------------------- MOUNT -------------------------
+// ------------------ MOUNT Y UNMOUNT ---------------------
 struct PartMontada {
-  QString name;  // Nombre de la partición
-  QString id;    // ID generado (vda1, vdb2, ...)
+  QString name;
+  QString id;  // (vda1, vdb2, ...)
 };
 struct DiscoMontado {
   QString path;
@@ -1038,6 +1038,54 @@ struct DiscoMontado {
   std::vector<PartMontada> parts;
 };
 std::vector<DiscoMontado> discosMontados;
+
+void imprimirParticionesDisco(QPlainTextEdit* out, const DiscoMontado& disco) {
+  const int largoLinea = 34;
+  const int largoNombre = 20;
+  const int largoId = 9;
+
+  QString encabezado;
+  encabezado += QString("-").repeated(largoLinea) + "\n";
+  encabezado += "|      Particiones Montadas      |\n";
+  encabezado += QString("-").repeated(largoLinea) + "\n";
+  encabezado += "| Nombre              | ID       |\n";
+  encabezado += QString("-").repeated(largoLinea) + "\n";
+
+  for (const PartMontada& p : disco.parts) {
+    encabezado += "| " + p.name;
+    encabezado += QString(" ").repeated(largoNombre - p.name.length()) + "| ";
+    encabezado += p.id + QString(" ").repeated(largoId - p.id.length()) + "|\n";
+  }
+  encabezado += QString("-").repeated(largoLinea) + "\n";
+  out->appendPlainText(encabezado);
+}
+
+int primerNumeroDisponible(const DiscoMontado& disco) {
+  std::vector<int> usados;
+  for (const PartMontada& p : disco.parts) {
+    QString numStr = p.id.mid(3);  // después de vdX
+    usados.push_back(numStr.toInt());
+  }
+  std::sort(usados.begin(), usados.end());
+  int numero = 1;
+  for (int u : usados) {
+    if (u == numero) numero++;
+    else break;
+  }
+  return numero;
+}
+
+char primeraLetraDisponible() {
+  std::vector<char> usadas;
+  for (const DiscoMontado& d : discosMontados) usadas.push_back(d.letra);
+  std::sort(usadas.begin(), usadas.end());
+  char letra = 'a';
+  for (char u : usadas) {
+    if (u == letra) letra++;
+    else break;
+  }
+  return letra;
+}
 
 void DiskManager::mount(
   const QStringList& args, QPlainTextEdit* out, const QDir& currentDir) {
@@ -1059,7 +1107,7 @@ void DiskManager::mount(
     out->appendPlainText("Falta parámetro name.\n");
     return;
   }
-  // Resolviendo ruta relativa
+  // Resolver ruta relativa
   QDir base = currentDir;
   QString finalPath = base.absoluteFilePath(rawPath);
   if (!finalPath.endsWith(".disk")) {
@@ -1075,10 +1123,9 @@ void DiskManager::mount(
   file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
   bool encontrada = false;
   bool esLogica = false;
-
   Partition extendida;
   std::vector<std::pair<EBR, long>> ebrsPos;
-  // Buscar primarias/extendida
+  // Buscar primaria y detectar extendida
   for (const Partition& p : mbr.parts) {
     if (p.status == 1 && name == QString(p.name)) {
       encontrada = true;
@@ -1088,11 +1135,11 @@ void DiskManager::mount(
       extendida = p;
     }
   }
-  // Buscar lógica si no fue encontrada antes
+  // Buscar lógica
   if (!encontrada && extendida.status == 1) {
     ebrsPos = leerEBRsConPos(file, extendida);
     for (auto& par : ebrsPos) {
-      if (par.first.status == 1 && name == QString(par.first.name)) {
+      if (par.first.status == 1 && QString(par.first.name) == name) {
         encontrada = true;
         esLogica = true;
         break;
@@ -1104,7 +1151,7 @@ void DiskManager::mount(
     out->appendPlainText("No se encontró la partición.\n");
     return;
   }
-  // Buscar si este disco ya está montado
+  // Buscar disco ya montado
   DiscoMontado* disco = nullptr;
   for (auto& d : discosMontados) {
     if (d.path == finalPath) {
@@ -1112,33 +1159,74 @@ void DiskManager::mount(
       break;
     }
   }
+
+  // Si no existe, asignar letra usando tu función auxiliar
   if (!disco) {
-    char letra = 'a';
-    if (!discosMontados.empty()) {
-      letra = discosMontados.back().letra + 1;
-    }
-    discosMontados.push_back({finalPath, letra, {}});
+    char nuevaLetra = primeraLetraDisponible();
+    discosMontados.push_back({finalPath, nuevaLetra, {}});
     disco = &discosMontados.back();
   }
-  // Validar que no esté ya montada
+  // Revisar si esa partición ya está montada
   for (auto& p : disco->parts) {
     if (p.name == name) {
       out->appendPlainText("La partición ya está montada.\n");
       return;
     }
   }
-  // Asignar número
-  int num = disco->parts.size() + 1;
-  QString id = QString("vd%1%2").arg(disco->letra).arg(num);
+  int numLibre = primerNumeroDisponible(*disco);
+  QString id = QString("vd%1%2").arg(disco->letra).arg(numLibre);
   disco->parts.push_back({name, id});
+  imprimirParticionesDisco(out, *disco);
+}
 
-  out->appendPlainText("Particion montada con exito.\n");
-  out->appendPlainText("---------------------------------");
-  out->appendPlainText("| Nombre            | ID        |");
-  out->appendPlainText("---------------------------------");
-
-  for (auto& p : disco->parts) {
-    out->appendPlainText("| " + p.name + "            | " + p.id + "   |");
+void DiskManager::unmount(const QStringList& args, QPlainTextEdit* out) {
+  if (args.isEmpty()) {
+    out->appendPlainText("Falta parámetro id.\n");
+    return;
   }
-  out->appendPlainText("---------------------------------\n");
+  QString id;
+  for (const QString& a : args) {
+    if (a.toLower().startsWith("-id=")) id = a.mid(4);
+  }
+  if (id.isEmpty()) {
+    out->appendPlainText("Falta parámetro id.\n");
+    return;
+  }
+  if (!id.startsWith("vd") || id.length() < 4) {
+    out->appendPlainText("Formato de id inválido.\n");
+    return;
+  }
+  char letra = id[2].toLatin1();
+  bool encontradoDisco = false;
+  // Recorrer discos montados
+  for (int i = 0; i < discosMontados.size(); i++) {
+    DiscoMontado& disco = discosMontados[i];
+    if (disco.letra == letra) {
+      encontradoDisco = true;
+      bool encontradaParticion = false;
+      for (int j = 0; j < disco.parts.size(); j++) {
+        if (disco.parts[j].id == id) {
+          encontradaParticion = true;
+          disco.parts.erase(disco.parts.begin() + j);
+          break;
+        }
+      }
+      if (!encontradaParticion) {
+        out->appendPlainText("No existe una partición con ese id.\n");
+        return;
+      }
+      if (disco.parts.empty()) {
+        discosMontados.erase(discosMontados.begin() + i);
+        out->appendPlainText(
+          "Particion desmontada con exito.\nNo quedan particiones montadas en "
+          "el disco.\n");
+        return;
+      }
+      out->appendPlainText("Particion desmontada con exito.\n");
+      imprimirParticionesDisco(out, disco);
+      return;
+    }
+  }
+  if (!encontradoDisco)
+    out->appendPlainText("No existe un disco con esa letra.\n");
 }
