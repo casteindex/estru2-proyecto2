@@ -457,11 +457,19 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
 
 bool DiskManager::crearPrimaria(const QString& path, const QString& name,
   long sizeBytes, char fit, QPlainTextEdit* out) {
+  QString raidPath;
+  int pos = path.lastIndexOf(".disk");
+  raidPath = path.left(pos) + "_raid.disk";
+  crearParticionGenerica(raidPath, name, 'P', sizeBytes, fit, out);
   return crearParticionGenerica(path, name, 'P', sizeBytes, fit, out);
 }
 
 bool DiskManager::crearExtendida(const QString& path, const QString& name,
   long sizeBytes, char fit, QPlainTextEdit* out) {
+  QString raidPath;
+  int pos = path.lastIndexOf(".disk");
+  raidPath = path.left(pos) + "_raid.disk";
+  crearParticionGenerica(raidPath, name, 'E', sizeBytes, fit, out);
   return crearParticionGenerica(path, name, 'E', sizeBytes, fit, out);
 }
 
@@ -590,8 +598,33 @@ bool escribirNuevoEBR(std::fstream& file, const Partition& extendida,
   return true;
 }
 
+bool crearEBRInterno(const QString& path, long inicioNuevo, long sizeBytes,
+  char fit, const QString& name, QPlainTextEdit* out) {
+  std::fstream file(
+    path.toStdString(), std::ios::in | std::ios::out | std::ios::binary);
+  if (!file.is_open()) {
+    out->appendPlainText("No se pudo abrir el disco RAID.");
+    return false;
+  }
+  MBR mbr;
+  file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+  Partition extendida;
+  if (!obtenerExtendida(mbr, extendida)) {
+    out->appendPlainText("El disco RAID no tiene extendida.");
+    return false;
+  }
+  std::vector<EBR> ebrs = leerEBRs(file, extendida);
+  if (!escribirNuevoEBR(
+        file, extendida, ebrs, inicioNuevo, sizeBytes, fit, name)) {
+    out->appendPlainText("Error al escribir EBR en RAID.");
+    return false;
+  }
+  return true;
+}
+
 bool DiskManager::crearLogica(const QString& path, const QString& name,
   long sizeBytes, char fitUser, QPlainTextEdit* out) {
+  // Abrir disco principal
   std::fstream file(
     path.toStdString(), std::ios::in | std::ios::out | std::ios::binary);
   if (!file.is_open()) {
@@ -601,40 +634,43 @@ bool DiskManager::crearLogica(const QString& path, const QString& name,
   MBR mbr;
   file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
 
-  // Obtener la partición extendida
   Partition extendida;
   if (!obtenerExtendida(mbr, extendida)) {
     out->appendPlainText("No existe una partición extendida.");
     return false;
   }
-  // Leer EBRs existentes
+  // Leer EBRs del disco principal
   std::vector<EBR> ebrs = leerEBRs(file, extendida);
 
-  // Verificar nombre único
+  // Validar nombre
   if (!nombreLogicaDisponible(ebrs, name)) {
     out->appendPlainText("Ya existe una partición lógica con ese nombre.");
     return false;
   }
-
-  // Calcular huecos dentro de la extendida
+  // Calcular huecos
   std::vector<Hueco> huecos = calcularHuecosEnExtendida(extendida, ebrs);
   if (!mostrarEspacioDisponible(huecos, sizeBytes, out)) return false;
-
-  // Elegir hueco usando el Fit elegido
+  // Elegir hueco usando el fit de la extendida
   Hueco elegido = elegirHueco(huecos, sizeBytes, extendida.fit);
   if (elegido.inicio == -1) {
     out->appendPlainText(
       "No se encontró un hueco adecuado dentro de la extendida.");
     return false;
   }
+  long inicioNuevo = elegido.inicio;
 
-  // Insertar el nuevo EBR
-  if (!escribirNuevoEBR(file, extendida, ebrs, elegido.inicio, sizeBytes,
-        extendida.fit, name)) {
-    out->appendPlainText("Error al escribir el EBR.");
+  // Insertar en disco principal
+  if (!escribirNuevoEBR(
+        file, extendida, ebrs, inicioNuevo, sizeBytes, extendida.fit, name)) {
+    out->appendPlainText("Error al escribir EBR.");
     return false;
   }
-  out->appendPlainText("Partición lógica creada correctamente.\n");
+
+  // Insertar en disco raid
+  QString raidPath;
+  int pos = path.lastIndexOf(".disk");
+  raidPath = path.left(pos) + "_raid.disk";
+  crearEBRInterno(raidPath, inicioNuevo, sizeBytes, extendida.fit, name, out);
   return true;
 }
 // -----------------------------------------------------------------
@@ -642,6 +678,7 @@ bool DiskManager::crearLogica(const QString& path, const QString& name,
 bool DiskManager::deleteParticion() {
   return 1;
 }
+
 bool DiskManager::addAParticion() {
   return 1;
 }
