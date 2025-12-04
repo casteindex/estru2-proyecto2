@@ -239,8 +239,8 @@ void DiskManager::rmdisk(const QStringList& args, QPlainTextEdit* out,
 
 // -------------------------------------------------------
 // ----------------------- FDISK -------------------------
-void DiskManager::fdisk(
-  const QStringList& args, QPlainTextEdit* out, const QDir& currentDir) {
+void DiskManager::fdisk(const QStringList& args, QPlainTextEdit* out,
+  const QDir& currentDir, Terminal* terminal) {
   long sizeBytes = 0;
   char unit = 'k';  // default
   char type = 'P';  // default
@@ -264,9 +264,8 @@ void DiskManager::fdisk(
   // TODO: Buscar otra forma para no repetir la lógica de fdiskParams aquí
   if (!deleteMode.isEmpty()) {
     // Borrar partición
-    if (deleteParticion(finalPath, name, out))
-      out->appendPlainText("Partición " + name + " eliminada con éxito.\n");
-    else out->appendPlainText("Error al eliminar la partición " + name + ".\n");
+    if (!deleteParticion(finalPath, name, out, terminal))
+      out->appendPlainText("Error al eliminar la partición " + name + ".\n");
     return;
   }
 
@@ -752,69 +751,170 @@ bool DiskManager::crearLogica(const QString& path, const QString& name,
 // -----------------------------------------------------------------
 
 // -----------------------------------------------------------------
-bool DiskManager::deleteParticion(
-  const QString& path, const QString& name, QPlainTextEdit* out) {
+static bool deleteParticionInterno(const QString& path, const QString& name) {
   std::fstream file(
     path.toStdString(), std::ios::in | std::ios::out | std::ios::binary);
-  if (!file.is_open()) {
-    out->appendPlainText(
-      "No se pudo abrir el disco para eliminar la partición.");
-    return false;
-  }
+  if (!file.is_open()) return false;
 
   MBR mbr;
   file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
-
   bool encontrada = false;
 
-  // Primero, buscar en particiones primarias/extendida
+  // Particiones primarias/extendida
   for (auto& p : mbr.parts) {
     if (p.status == 1 && name == QString(p.name)) {
-      p.status = 0;  // Marcamos como eliminada
+      p.status = 0;
       encontrada = true;
-      out->appendPlainText("Partición eliminada del MBR.");
       break;
     }
   }
-
+  // Revisar lógicas
   if (!encontrada) {
-    // Buscar en particiones lógicas dentro de la extendida
     Partition extendida;
     if (obtenerExtendida(mbr, extendida)) {
       auto ebrsPos = leerEBRsConPos(file, extendida);
       for (const auto& [ebr, pos] : ebrsPos) {
         if (ebr.status == 1 && name == QString(ebr.name)) {
-          EBR modificado = ebr;
-          modificado.status = 0;  // Marcar como eliminada
-          if (!escribirEBREnPos(file, pos, modificado)) {
-            out->appendPlainText("Error al eliminar partición lógica.");
-            file.close();
-            return false;
-          }
-          out->appendPlainText("Partición lógica eliminada.");
+          EBR mod = ebr;
+          mod.status = 0;
+          escribirEBREnPos(file, pos, mod);
           encontrada = true;
           break;
         }
       }
     }
   }
-
   if (!encontrada) {
-    out->appendPlainText("No se encontró una partición con ese nombre.");
     file.close();
     return false;
   }
-
-  // Guardar cambios en el MBR
   file.seekp(0);
   file.write(reinterpret_cast<char*>(&mbr), sizeof(MBR));
   file.close();
   return true;
 }
 
+bool DiskManager::deleteParticion(const QString& path, const QString& name,
+  QPlainTextEdit* out, Terminal* terminal) {
+  // Abrir disco principal
+  // Nota: debe ser un puntero para poder usarse en la función lambda
+  std::fstream* file = new std::fstream(
+    path.toStdString(), std::ios::in | std::ios::out | std::ios::binary);
+  if (!file->is_open()) {
+    out->appendPlainText("No se pudo abrir el disco.");
+    delete file;
+    return false;
+  }
+  MBR mbr;
+  file->read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+  // Determinar tipo de partición
+  char tipo = '\0';
+  bool encontrada = false;
+  for (const auto& p : mbr.parts) {
+    if (p.status == 1 && name == QString(p.name)) {
+      tipo = p.type;  // 'P' o 'E'
+      encontrada = true;
+      break;
+    }
+  }
+  // Buscar en EBRs si no fue primaria/extendida
+  Partition extendida;
+  std::vector<std::pair<EBR, long>> ebrsPos;
+  if (!encontrada && obtenerExtendida(mbr, extendida)) {
+    ebrsPos = leerEBRsConPos(*file, extendida);
+    for (const auto& [ebr, pos] : ebrsPos) {
+      if (ebr.status == 1 && name == QString(ebr.name)) {
+        tipo = 'L';
+        encontrada = true;
+        break;
+      }
+    }
+  }
+  if (!encontrada) {
+    out->appendPlainText("No se encontró la partición.");
+    file->close();
+    return false;
+  }
+  // Confirmación de borrado
+  terminal->esperandoConfirmacion = true;
+  terminal->prompt = ">> ¿Seguro que desea eliminar la particion? Y/N: ";
+  QObject::connect(
+    terminal, &Terminal::confirmacionRecibida, terminal, [=](char r) mutable {
+      if (r == 'y') {
+        bool exito = false;
+
+        // Eliminar primaria o extendida
+        if (tipo == 'P' || tipo == 'E') {
+          for (auto& p : mbr.parts) {
+            if (p.status == 1 && name == QString(p.name)) {
+              p.status = 0;
+              exito = true;
+              break;
+            }
+          }
+
+          // Si es extendida, borrar todos los EBRs dentro también
+          if (tipo == 'E' && exito) {
+            if (obtenerExtendida(mbr, extendida)) {
+              auto ebrs = leerEBRsConPos(*file, extendida);
+              for (const auto& [ebr, pos] : ebrs) {
+                EBR mod = ebr;
+                mod.status = 0;
+                escribirEBREnPos(*file, pos, mod);
+              }
+            }
+          }
+        }
+        // Eliminar lógica
+        else if (tipo == 'L') {
+          for (const auto& [ebr, pos] : ebrsPos) {
+            if (ebr.status == 1 && name == QString(ebr.name)) {
+              EBR mod = ebr;
+              mod.status = 0;
+              exito = escribirEBREnPos(*file, pos, mod);
+              break;
+            }
+          }
+        }
+        // Guardar MBR actualizado
+        file->seekp(0);
+        file->write(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+        file->close();
+
+        // Actualizar RAID sin imprimir nada
+        QString raidPath = path;
+        int p = raidPath.lastIndexOf(".disk");
+        raidPath = raidPath.left(p) + "_raid.disk";
+        deleteParticionInterno(raidPath, name);
+
+        if (exito) {
+          QString msg = "Particion ";
+          if (tipo == 'P') msg += "primaria";
+          else if (tipo == 'E') msg += "extendida";
+          else if (tipo == 'L') msg += "logica";
+          msg += " eliminada con exito.\n";
+          out->appendPlainText(msg);
+        } else {
+          out->appendPlainText("Error al eliminar la partición.\n");
+        }
+      } else if (r == 'n' || r == 'N') {
+        out->appendPlainText("Operacion cancelada.\n");
+      } else {
+        out->appendPlainText("Entrada invalida. Operacion cancelada.\n");
+      }
+      terminal->esperandoConfirmacion = false;
+      QObject::disconnect(
+        terminal, &Terminal::confirmacionRecibida, nullptr, nullptr);
+    });
+  return true;
+}
+// -----------------------------------------------------------------
+
+// -----------------------------------------------------------------
 bool DiskManager::addAParticion() {
   return 1;
 }
+// -----------------------------------------------------------------
 
 bool DiskManager::fdiskParams(const QStringList& args, long& sizeBytes,
   char& unit, char& type, QString& path, QString& name, QString& deleteMode,
@@ -924,4 +1024,121 @@ bool DiskManager::fdiskParams(const QStringList& args, long& sizeBytes,
     case 'm': sizeBytes *= 1024 * 1024; break;
   }
   return true;
+}
+
+// -------------------------------------------------------
+// ----------------------- MOUNT -------------------------
+struct PartMontada {
+  QString name;  // Nombre de la partición
+  QString id;    // ID generado (vda1, vdb2, ...)
+};
+struct DiscoMontado {
+  QString path;
+  char letra;
+  std::vector<PartMontada> parts;
+};
+std::vector<DiscoMontado> discosMontados;
+
+void DiskManager::mount(
+  const QStringList& args, QPlainTextEdit* out, const QDir& currentDir) {
+  if (args.isEmpty()) {
+    out->appendPlainText("Falta parámetro path.\n");
+    return;
+  }
+  QString rawPath;
+  QString name;
+  for (const QString& a : args) {
+    if (a.toLower().startsWith("-path=")) rawPath = a.mid(6);
+    if (a.toLower().startsWith("-name=")) name = a.mid(6);
+  }
+  if (rawPath.isEmpty()) {
+    out->appendPlainText("Falta parámetro path.\n");
+    return;
+  }
+  if (name.isEmpty()) {
+    out->appendPlainText("Falta parámetro name.\n");
+    return;
+  }
+  // Resolviendo ruta relativa
+  QDir base = currentDir;
+  QString finalPath = base.absoluteFilePath(rawPath);
+  if (!finalPath.endsWith(".disk")) {
+    out->appendPlainText("Extensión de disco inválida.\n");
+    return;
+  }
+  std::fstream file(finalPath.toStdString(), std::ios::in | std::ios::binary);
+  if (!file.is_open()) {
+    out->appendPlainText("No se pudo abrir el disco.\n");
+    return;
+  }
+  MBR mbr;
+  file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+  bool encontrada = false;
+  bool esLogica = false;
+
+  Partition extendida;
+  std::vector<std::pair<EBR, long>> ebrsPos;
+  // Buscar primarias/extendida
+  for (const Partition& p : mbr.parts) {
+    if (p.status == 1 && name == QString(p.name)) {
+      encontrada = true;
+      break;
+    }
+    if (p.status == 1 && p.type == 'E') {
+      extendida = p;
+    }
+  }
+  // Buscar lógica si no fue encontrada antes
+  if (!encontrada && extendida.status == 1) {
+    ebrsPos = leerEBRsConPos(file, extendida);
+    for (auto& par : ebrsPos) {
+      if (par.first.status == 1 && name == QString(par.first.name)) {
+        encontrada = true;
+        esLogica = true;
+        break;
+      }
+    }
+  }
+  file.close();
+  if (!encontrada) {
+    out->appendPlainText("No se encontró la partición.\n");
+    return;
+  }
+  // Buscar si este disco ya está montado
+  DiscoMontado* disco = nullptr;
+  for (auto& d : discosMontados) {
+    if (d.path == finalPath) {
+      disco = &d;
+      break;
+    }
+  }
+  if (!disco) {
+    char letra = 'a';
+    if (!discosMontados.empty()) {
+      letra = discosMontados.back().letra + 1;
+    }
+    discosMontados.push_back({finalPath, letra, {}});
+    disco = &discosMontados.back();
+  }
+  // Validar que no esté ya montada
+  for (auto& p : disco->parts) {
+    if (p.name == name) {
+      out->appendPlainText("La partición ya está montada.\n");
+      return;
+    }
+  }
+  // Asignar número
+  int num = disco->parts.size() + 1;
+  QString id = QString("vd%1%2").arg(disco->letra).arg(num);
+  disco->parts.push_back({name, id});
+
+  out->appendPlainText("Particion montada con exito.\n");
+  out->appendPlainText("---------------------------------");
+  out->appendPlainText("| Nombre            | ID        |");
+  out->appendPlainText("---------------------------------");
+
+  for (auto& p : disco->parts) {
+    out->appendPlainText("| " + p.name + "            | " + p.id + "   |");
+  }
+  out->appendPlainText("---------------------------------\n");
 }

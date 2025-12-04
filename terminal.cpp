@@ -65,7 +65,9 @@ void Terminal::processCommand(const QString& linea) {
   } else if (cmd.toLower() == "rmdisk") {
     DiskManager::rmdisk(args, editor, currentDir, this);
   } else if (cmd.toLower() == "fdisk") {
-    DiskManager::fdisk(args, editor, currentDir);
+    DiskManager::fdisk(args, editor, currentDir, this);
+  } else if (cmd.toLower() == "mount") {
+    DiskManager::mount(args, editor, currentDir);
   }
 
   else {
