@@ -19,6 +19,8 @@ class DiskManager {
   static void mount(
     const QStringList& args, QPlainTextEdit* out, const QDir& currentDir);
   static void unmount(const QStringList& args, QPlainTextEdit* out);
+  static void rep(
+    const QStringList& args, QPlainTextEdit* out, const QDir& currentDir);
 
  private:
   static bool mkdiskParams(const QStringList& args, long& sizeBytes, char& fit,
@@ -40,5 +42,6 @@ class DiskManager {
     long sizeBytes, char fit, QPlainTextEdit* out);
   static bool deleteParticion(const QString& path, const QString& name,
     QPlainTextEdit* out, Terminal* terminal);
-  static bool addAParticion();
+  static bool addAParticion(const QString& path, const QString& name,
+    long addBytes, QPlainTextEdit* out);
 };

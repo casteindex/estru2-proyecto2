@@ -271,7 +271,7 @@ void DiskManager::fdisk(const QStringList& args, QPlainTextEdit* out,
 
   if (addValue != 0) {
     // Agregar/quitar espacio
-    if (addAParticion())
+    if (addAParticion(finalPath, name, sizeBytes, out))
       out->appendPlainText("Espacio modificado para " + name + ".\n");
     else
       out->appendPlainText("Error al modificar espacio para " + name + ".\n");
@@ -911,8 +911,69 @@ bool DiskManager::deleteParticion(const QString& path, const QString& name,
 // -----------------------------------------------------------------
 
 // -----------------------------------------------------------------
-bool DiskManager::addAParticion() {
-  return 1;
+bool DiskManager::addAParticion(const QString& path, const QString& name,
+  long addBytes, QPlainTextEdit* out) {
+  std::fstream file(
+    path.toStdString(), std::ios::in | std::ios::out | std::ios::binary);
+  if (!file.is_open()) {
+    out->appendPlainText("No se pudo abrir el disco.\n");
+    return false;
+  }
+  // Leer MBR
+  MBR mbr;
+  file.seekg(0);
+  file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+  // Buscar partición
+  Partition* objetivo = nullptr;
+  for (auto& p : mbr.parts) {
+    if (p.status == 1 && name == QString(p.name)) {
+      if (p.type != 'P' && p.type != 'E') {
+        out->appendPlainText(
+          "Solo se puede modificar primarias o extendida.\n");
+        return false;
+      }
+      objetivo = &p;
+      break;
+    }
+  }
+  if (!objetivo) {
+    out->appendPlainText("No se encontró la partición.\n");
+    return false;
+  }
+  long nuevo = objetivo->size + addBytes;
+  // Validar tamaño final
+  if (nuevo <= 0) {
+    out->appendPlainText("El tamaño resultante sería inválido.\n");
+    return false;
+  }
+  // Obtener huecos actuales
+  auto usadas = obtenerParticionesUsadasOrdenadas(mbr);
+  auto huecos = calcularHuecos(usadas, mbr.size);
+  // Buscar hueco que esté justo después
+  long finActual = objetivo->start + objetivo->size;
+  long espacioDisponible = -1;
+  for (auto& h : huecos) {
+    if (h.inicio == finActual) {
+      espacioDisponible = h.tam;
+      break;
+    }
+  }
+  if (addBytes > 0) {
+    // Expansión, requiere hueco suficiente
+    if (espacioDisponible < addBytes) {
+      out->appendPlainText("No hay espacio suficiente para expandir.\n");
+      return false;
+    }
+  }
+  objetivo->size = nuevo;
+
+  // Guardar MBR
+  file.seekp(0);
+  file.write(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+  file.flush();
+  file.close();
+  out->appendPlainText("Partición modificada correctamente.\n");
+  return true;
 }
 // -----------------------------------------------------------------
 
@@ -1229,4 +1290,203 @@ void DiskManager::unmount(const QStringList& args, QPlainTextEdit* out) {
   }
   if (!encontradoDisco)
     out->appendPlainText("No existe un disco con esa letra.\n");
+}
+
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+#include <QFont>
+#include <QImage>
+#include <QPainter>
+
+struct PartitionInfo {
+  QString name;
+  int start;
+  int size;
+  QString type;  // "MBR", "PRIMARY", "EXTENDED", "LOGICAL", "FREE"
+};
+
+void DiskManager::rep(
+  const QStringList& args, QPlainTextEdit* out, const QDir& currentDir) {
+  QString id;
+  for (const QString& arg : args) {
+    if (arg.startsWith("-id=")) id = arg.mid(4).trimmed();
+  }
+
+  if (id.isEmpty()) {
+    out->appendPlainText("Falta el parámetro -id=");
+    return;
+  }
+
+  // Buscar disco montado
+  char letra = id[2].toLatin1();
+  bool encontradoDisco = false;
+  QString diskFilePath;
+  for (auto& disco : discosMontados) {
+    if (disco.letra == letra) {
+      encontradoDisco = true;
+      for (auto& part : disco.parts) {
+        if (part.id == id) {
+          diskFilePath = disco.path;
+          break;
+        }
+      }
+      break;
+    }
+  }
+  if (!encontradoDisco) {
+    out->appendPlainText("No se ha montado el disco.");
+    return;
+  }
+
+  // Abrir disco
+  std::fstream file(
+    diskFilePath.toStdString(), std::ios::in | std::ios::binary);
+  if (!file.is_open()) {
+    out->appendPlainText("No se pudo abrir el archivo del disco.");
+    return;
+  }
+
+  // Leer MBR
+  MBR mbr;
+  file.read(reinterpret_cast<char*>(&mbr), sizeof(MBR));
+  int totalSize = mbr.size;
+
+  // Variables para recordar dónde está la extendida para efectos visuales
+  long extStart = -1;
+  long extEnd = -1;
+
+  std::vector<PartitionInfo> blocks;
+  blocks.push_back({"MBR", 0, (int)sizeof(MBR), "MBR"});
+
+  // 1. Filtrar particiones activas del MBR
+  std::vector<Partition> activeParts;
+  for (auto& p : mbr.parts) {
+    if (p.status == 1 && p.size > 0) activeParts.push_back(p);
+  }
+
+  // Ordenar primarias
+  std::sort(activeParts.begin(), activeParts.end(),
+    [](const Partition& a, const Partition& b) { return a.start < b.start; });
+
+  int lastPos = sizeof(MBR);
+
+  // 2. Procesar MBR (Primarias y Extendida 'macro')
+  for (auto& p : activeParts) {
+    // Hueco antes de la partición
+    if (p.start > lastPos)
+      blocks.push_back({"", lastPos, p.start - lastPos, "FREE"});
+
+    QString typeStr = (p.type == 'E') ? "EXTENDED" : "PRIMARY";
+    blocks.push_back({QString::fromLatin1(p.name), p.start, p.size, typeStr});
+
+    if (p.type == 'E') {
+      extStart = p.start;
+      extEnd = p.start + p.size;
+    }
+    lastPos = p.start + p.size;
+  }
+
+  // Hueco al final del disco
+  if (lastPos < mbr.size)
+    blocks.push_back({"", lastPos, mbr.size - lastPos, "FREE"});
+
+  // 3. Si hay extendida, analizar su contenido interno (EBRs)
+  if (extStart != -1) {
+    std::vector<EBR> logicals;
+    long pos = extStart;
+
+    // Leer todos los EBRs activos
+    while (pos != -1 && pos < extEnd) {
+      EBR e;
+      file.seekg(pos);
+      file.read(reinterpret_cast<char*>(&e), sizeof(EBR));
+      if (e.status == 1) {  // Solo si está activa
+        logicals.push_back(e);
+      }
+      if (e.next == -1 || e.next <= pos) break;
+      pos = e.next;
+    }
+
+    // Si hay lógicas, "explotamos" el bloque EXTENDED en sub-bloques
+    if (!logicals.empty()) {
+      std::vector<PartitionInfo> newBlocks;
+
+      for (auto& b : blocks) {
+        // Si no es la extendida, pasa directo
+        if (b.type != "EXTENDED") {
+          newBlocks.push_back(b);
+          continue;
+        }
+
+        // Estamos en la extendida, vamos a llenarla por dentro
+        int currentExtPos = b.start;
+
+        for (auto& log : logicals) {
+          // OJO AQUI: El struct EBR está ANTES de los datos (log.start)
+          int ebrPos = log.start - sizeof(EBR);
+
+          // 1. Espacio libre antes del EBR (dentro de la extendida)
+          if (ebrPos > currentExtPos) {
+            newBlocks.push_back(
+              {"", currentExtPos, ebrPos - currentExtPos, "FREE"});
+          }
+
+          // 2. El EBR propiamente dicho
+          newBlocks.push_back({"EBR", ebrPos, (int)sizeof(EBR), "EBR"});
+
+          // 3. La partición lógica (Datos)
+          newBlocks.push_back(
+            {QString::fromLatin1(log.name), log.start, log.size, "LOGICAL"});
+
+          currentExtPos = log.start + log.size;
+        }
+
+        // 4. Espacio libre al final de la extendida
+        if (currentExtPos < (b.start + b.size)) {
+          newBlocks.push_back(
+            {"", currentExtPos, (b.start + b.size) - currentExtPos, "FREE"});
+        }
+      }
+      blocks = newBlocks;
+    }
+  }
+
+  file.close();
+
+  // 4. Imprimir con formato jerárquico
+  out->appendPlainText("\n=== REPORTE DE DISCO ===");
+  // Imprimimos el encabezado de la extendida si existe para dar contexto visual
+  if (extStart != -1) {
+    out->appendPlainText(QString("Partición Extendida: Inicio %1 - Fin %2")
+        .arg(extStart)
+        .arg(extEnd));
+  }
+
+  out->appendPlainText(QString("%1 %2 %3 %4")
+      .arg("TIPO", -15)
+      .arg("NOMBRE", -15)
+      .arg("START", -10)
+      .arg("SIZE", -10));
+
+  for (auto& b : blocks) {
+    bool isInsideExtended =
+      (b.start >= extStart && (b.start + b.size) <= extEnd && extStart != -1);
+
+    // Si es el contenedor global extendida (caso vacía), no lo indentamos
+    if (b.type == "EXTENDED") isInsideExtended = false;
+
+    QString prefix = isInsideExtended ? "  |__ " : "";
+    QString displayType = b.type;
+
+    // Pequeño detalle visual: diferenciar FREE interno de externo
+    if (b.type == "FREE" && isInsideExtended) displayType = "FREE (Int)";
+
+    out->appendPlainText(QString("%1%2 %3 %4 %5")
+        .arg(prefix)
+        .arg(displayType,
+          -15 + (isInsideExtended ? -4 : 0))  // Ajuste padding si tiene prefijo
+        .arg(b.name.isEmpty() ? "---" : b.name, -15)
+        .arg(b.start, -10)
+        .arg(b.size, -10));
+  }
 }
