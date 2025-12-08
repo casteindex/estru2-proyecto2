@@ -1672,6 +1672,6 @@ void DiskManager::rep(
   QFileInfo fi(path);
   if (!fi.isAbsolute()) finalPath = currentDir.absoluteFilePath(path);
   if (pixmap.save(finalPath))
-    out->appendPlainText("Reporte gráfico generado exitosamente.\n");
+    out->appendPlainText("Reporte generado con éxito.\n");
   else out->appendPlainText("Error al intentar guardar el reporte.\n");
 }
