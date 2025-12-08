@@ -6,16 +6,12 @@
 #include <QFileInfo>
 #include <QPainter>
 #include <QPixmap>
-#include <algorithm>
-#include <climits>
 #include <cstring>
 #include <fstream>
-#include <utility>
 #include <vector>
 
+#include "diskmanager.h"
 #include "terminal.h"
-
-using namespace std;
 
 // ----------------------- Structs -------------------------
 struct Partition {
@@ -45,6 +41,24 @@ struct EBR {
 struct Hueco {
   int inicio;
   int tam;
+};
+
+struct PartMontada {
+  QString name;
+  QString id;
+};
+
+struct DiscoMontado {
+  QString path;
+  char letra;
+  std::vector<PartMontada> parts;
+};
+
+struct PartitionInfo {  // para el reporte
+  QString name;         // "MBR", "LIBRE", "PRIMARIA", etc.
+  int start;
+  int size;
+  QString type;
 };
 
 // -------------------- Helpers internos ---------------------
@@ -171,7 +185,7 @@ bool obtenerExtendida(const MBR& mbr, Partition& extendida) {
 }
 
 // Lee los EBRs activos en la partición extendida y devuelve pares (EBR, posEBR)
-std::vector<std::pair<EBR, long>> leerEBRsConPosRobusto(
+std::vector<std::pair<EBR, long>> leerEBRsConPos(
   std::fstream& file, const Partition& extendida) {
   std::vector<std::pair<EBR, long>> lista;
   long inicioExt = extendida.start;
@@ -180,11 +194,10 @@ std::vector<std::pair<EBR, long>> leerEBRsConPosRobusto(
   // Posición del primer EBR es inicioExt
   long pos = inicioExt;
   // Tope seguro de iteraciones
-  size_t maxIter = static_cast<size_t>(
-                     extendida.size / max(1, static_cast<int>(sizeof(EBR)))) +
-                   10;
+  // clang-format off
+  size_t maxIter = static_cast<size_t>(extendida.size / std::max(1, static_cast<int>(sizeof(EBR)))) + 10;
   size_t iter = 0;
-
+  // clang-format on
   while (pos >= inicioExt && pos + static_cast<long>(sizeof(EBR)) <= finExt &&
          iter < maxIter) {
     EBR ebr;
@@ -338,10 +351,8 @@ void DiskManager::mkdisk(
   QString rawPath;
 
   if (!mkdiskParams(args, sizeBytes, fit, rawPath, unit, out)) return;
-
   QDir base = currentDir;
   QString finalPath = base.absoluteFilePath(rawPath);
-
   QFileInfo info(finalPath);
   QDir dir = info.dir();
   if (!dir.exists()) {
@@ -350,14 +361,12 @@ void DiskManager::mkdisk(
       return;
     }
   }
-
   QString raidPath;
   int pos = finalPath.lastIndexOf(".disk");
   raidPath = finalPath.left(pos) + "_raid.disk";
-
   // Crear discos
   {
-    std::fstream f(finalPath.toStdString(), ios::out | ios::binary);
+    std::fstream f(finalPath.toStdString(), std::ios::out | std::ios::binary);
     if (!f.is_open()) {
       out->appendPlainText("No se pudo crear el archivo.\n");
       return;
@@ -369,7 +378,7 @@ void DiskManager::mkdisk(
     f.close();
   }
   {
-    std::fstream f(raidPath.toStdString(), ios::out | ios::binary);
+    std::fstream f(raidPath.toStdString(), std::ios::out | std::ios::binary);
     if (!f.is_open()) {
       out->appendPlainText("No se pudo crear el archivo RAID.\n");
       return;
@@ -380,7 +389,6 @@ void DiskManager::mkdisk(
     }
     f.close();
   }
-
   // Escribir MBR inicial
   {
     std::fstream file = openDiskForReadWrite(finalPath);
@@ -423,11 +431,8 @@ bool DiskManager::mkdiskParams(const QStringList& args, long& sizeBytes,
   bool pathFound = false;
 
   // Recorrer la lista de argumentos buscando los argumentos requeridos
-  // TODO: ver cómo hacer que si se le pasa un argumento repetido tire error así
-  // como si se le pasa un argumento inválido
   for (const QString& arg : args) {
     QString lowerArg = arg.toLower();
-
     if (lowerArg.startsWith("-size=")) {
       long size = arg.mid(6).toLong();
       if (size <= 0) {
@@ -490,21 +495,18 @@ void DiskManager::rmdisk(const QStringList& args, QPlainTextEdit* out,
     out->appendPlainText("Falta parámetro path.\n");
     return;
   }
-
   QDir base = currentDir;
   QString finalPath = base.absoluteFilePath(rawPath);
   if (!finalPath.endsWith(".disk")) {
     out->appendPlainText("Extensión de disco inválida.\n");
     return;
   }
-
   QFile* file = new QFile(finalPath);
   if (!file->exists()) {
     out->appendPlainText("El archivo no existe.\n");
     delete file;
     return;
   }
-
   terminal->esperandoConfirmacion = true;
   terminal->prompt = ">> ¿Seguro que desea eliminar el disco? Y/N: ";
 
@@ -541,24 +543,20 @@ void DiskManager::fdisk(const QStringList& args, QPlainTextEdit* out,
   if (!fdiskParams(args, sizeBytes, unit, type, rawPath, name, deleteMode,
         addValue, fit, out))
     return;
-
   QDir base = currentDir;
   QString finalPath = base.absoluteFilePath(rawPath);
-
   if (!deleteMode.isEmpty()) {
     if (!deleteParticion(finalPath, name, out, terminal))
       out->appendPlainText("Error al eliminar la partición " + name + ".\n");
     return;
   }
-
   if (addValue != 0) {
-    if (addAParticion(finalPath, name, sizeBytes, out))
+    if (addAParticion(finalPath, name, addValue, out))
       out->appendPlainText("Espacio modificado para " + name + ".\n");
     else
       out->appendPlainText("Error al modificar espacio para " + name + ".\n");
     return;
   }
-
   switch (type) {
     case 'P':
       if (crearPrimaria(finalPath, name, sizeBytes, fit, out))
@@ -665,6 +663,11 @@ bool DiskManager::fdiskParams(const QStringList& args, long& sizeBytes,
       out->appendPlainText("No se debe usar -size con -add.\n");
       return false;
     }
+    switch (unit) {
+      case 'b': break;
+      case 'k': addValue *= 1024; break;
+      case 'm': addValue *= 1024 * 1024; break;
+    }
     return true;
   }
   // Si no es delete ni add -> estamos creando
@@ -689,14 +692,12 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
     if (!silencioso) out->appendPlainText("No se pudo abrir el disco.");
     return false;
   }
-
   MBR mbr;
   if (!readMBR(file, mbr)) {
     if (!silencioso) out->appendPlainText("No se pudo leer MBR.");
     file.close();
     return false;
   }
-
   if (!haySlotDisponible(mbr)) {
     if (!silencioso)
       out->appendPlainText("No hay slots de partición disponibles.");
@@ -707,10 +708,8 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
     file.close();
     return false;
   }
-
   auto usadas = obtenerParticionesUsadasOrdenadas(mbr);
   auto huecos = calcularHuecos(usadas, mbr.size);
-
   if (!silencioso) {
     int maxHueco = 0;
     for (const auto& h : huecos)
@@ -725,7 +724,6 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
       return false;
     }
   }
-
   Hueco elegido = elegirHueco(huecos, sizeBytes, fit);
   if (elegido.inicio == -1) {
     if (!silencioso)
@@ -734,7 +732,6 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
     file.close();
     return false;
   }
-
   if (!insertarParticionEnMBR(
         mbr, name, type, fit, sizeBytes, elegido.inicio)) {
     if (!silencioso)
@@ -742,7 +739,6 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
     file.close();
     return false;
   }
-
   // Si extendida, crear EBR inicial (inactivo)
   if (type == 'E') {
     EBR ebr;
@@ -755,7 +751,6 @@ bool crearParticionGenerica(const QString& path, const QString& name, char type,
     file.seekp(elegido.inicio);
     file.write(reinterpret_cast<char*>(&ebr), sizeof(EBR));
   }
-
   // Guardar MBR
   file.seekp(0);
   file.write(reinterpret_cast<char*>(&mbr), sizeof(MBR));
@@ -790,38 +785,32 @@ bool DiskManager::crearLogica(const QString& path, const QString& name,
     out->appendPlainText("No se pudo abrir el disco.");
     return false;
   }
-
   MBR mbr;
   if (!readMBR(file, mbr)) {
     out->appendPlainText("No se pudo leer MBR.");
     file.close();
     return false;
   }
-
   Partition extendida;
   if (!obtenerExtendida(mbr, extendida)) {
     out->appendPlainText("No existe una partición extendida.");
     file.close();
     return false;
   }
-
-  auto ebrsPos = leerEBRsConPosRobusto(file, extendida);
+  auto ebrsPos = leerEBRsConPos(file, extendida);
   if (!nombreLogicaDisponible(ebrsPos, name)) {
     out->appendPlainText("Ya existe una partición lógica con ese nombre.");
     file.close();
     return false;
   }
-
   auto huecos = calcularHuecosEnExtendida(extendida, ebrsPos);
   int maxHueco = 0;
   for (const auto& h : huecos)
     if (h.tam > maxHueco) maxHueco = h.tam;
-
   out->appendPlainText(
     "Espacio disponible: " + QString::number(maxHueco) + " Bytes");
   out->appendPlainText(
     "Espacio necesario : " + QString::number(sizeBytes) + " Bytes");
-
   if (maxHueco < sizeBytes + static_cast<int>(sizeof(EBR))) {
     out->appendPlainText(
       "...\nNo hay espacio suficiente dentro de la extendida.");
@@ -837,7 +826,6 @@ bool DiskManager::crearLogica(const QString& path, const QString& name,
     file.close();
     return false;
   }
-
   long posEBR = elegido.inicio;
 
   // Escribir nuevo EBR en disco principal
@@ -847,7 +835,6 @@ bool DiskManager::crearLogica(const QString& path, const QString& name,
     file.close();
     return false;
   }
-
   // Escribir en RAID (mismo offset)
   QString raidPath;
   int p = path.lastIndexOf(".disk");
@@ -875,13 +862,10 @@ bool DiskManager::crearLogica(const QString& path, const QString& name,
     file.close();
     return false;
   }
-
-  auto ebrsPosRaid = leerEBRsConPosRobusto(fileRaid, extRaid);
+  auto ebrsPosRaid = leerEBRsConPos(fileRaid, extRaid);
   if (!escribirNuevoEBRConEnlaces(
         fileRaid, extRaid, ebrsPosRaid, posEBR, sizeBytes, extRaid.fit, name)) {
     out->appendPlainText("EBR creado en principal pero fallo en RAID.");
-    // No retorno false aquí; ya se escribió en principal. Dejar que el usuario
-    // sepa.
   }
   fileRaid.close();
   file.close();
@@ -892,13 +876,11 @@ bool DiskManager::crearLogica(const QString& path, const QString& name,
 static bool deleteParticionInterno(const QString& path, const QString& name) {
   std::fstream file = openDiskForReadWrite(path);
   if (!file.is_open()) return false;
-
   MBR mbr;
   if (!readMBR(file, mbr)) {
     file.close();
     return false;
   }
-
   bool encontrada = false;
   // buscar en MBR
   for (auto& p : mbr.parts) {
@@ -912,7 +894,7 @@ static bool deleteParticionInterno(const QString& path, const QString& name) {
   if (!encontrada) {
     Partition extendida;
     if (obtenerExtendida(mbr, extendida)) {
-      auto ebrs = leerEBRsConPosRobusto(file, extendida);
+      auto ebrs = leerEBRsConPos(file, extendida);
       for (const auto& [ebr, pos] : ebrs) {
         if (ebr.status == 1 && name == QString::fromLatin1(ebr.name)) {
           EBR mod = ebr;
@@ -928,7 +910,6 @@ static bool deleteParticionInterno(const QString& path, const QString& name) {
     file.close();
     return false;
   }
-
   // Guardar MBR
   if (!writeMBR(file, mbr)) {
     file.close();
@@ -965,7 +946,7 @@ bool DiskManager::deleteParticion(const QString& path, const QString& name,
   Partition extendida;
   std::vector<std::pair<EBR, long>> ebrsPos;
   if (!encontrada && obtenerExtendida(mbr, extendida)) {
-    ebrsPos = leerEBRsConPosRobusto(*file, extendida);
+    ebrsPos = leerEBRsConPos(*file, extendida);
     for (const auto& [ebr, pos] : ebrsPos) {
       if (ebr.status == 1 && name == QString(ebr.name)) {
         tipo = 'L';
@@ -986,7 +967,6 @@ bool DiskManager::deleteParticion(const QString& path, const QString& name,
     terminal, &Terminal::confirmacionRecibida, terminal, [=](char r) mutable {
       if (r == 'y') {
         bool exito = false;
-
         // Eliminar primaria o extendida
         if (tipo == 'P' || tipo == 'E') {
           for (auto& p : mbr.parts) {
@@ -996,11 +976,10 @@ bool DiskManager::deleteParticion(const QString& path, const QString& name,
               break;
             }
           }
-
           // Si es extendida, borrar todos los EBRs dentro también
           if (tipo == 'E' && exito) {
             if (obtenerExtendida(mbr, extendida)) {
-              auto ebrs = leerEBRsConPosRobusto(*file, extendida);
+              auto ebrs = leerEBRsConPos(*file, extendida);
               for (const auto& [ebr, pos] : ebrs) {
                 EBR mod = ebr;
                 mod.status = 0;
@@ -1024,13 +1003,11 @@ bool DiskManager::deleteParticion(const QString& path, const QString& name,
         file->seekp(0);
         file->write(reinterpret_cast<char*>(&mbr), sizeof(MBR));
         file->close();
-
         // Actualizar RAID sin imprimir nada
         QString raidPath = path;
         int p = raidPath.lastIndexOf(".disk");
         raidPath = raidPath.left(p) + "_raid.disk";
         deleteParticionInterno(raidPath, name);
-
         if (exito) {
           QString msg = "Particion ";
           if (tipo == 'P') msg += "primaria";
@@ -1053,89 +1030,203 @@ bool DiskManager::deleteParticion(const QString& path, const QString& name,
   return true;
 }
 
-// addAParticion
+// -------------- Add a Particion --------------
+bool modificarLogica(std::fstream& file, MBR& mbr, const QString& name,
+  long addBytes, const QString& raidPath, QPlainTextEdit* out) {
+  // Localizar la Extendida
+  Partition extendida;
+  if (!obtenerExtendida(mbr, extendida)) {
+    out->appendPlainText(
+      "No existe partición extendida para modificar lógica.");
+    return false;
+  }
+  // Leer EBRs para encontrar la lógica
+  auto ebrsPos = leerEBRsConPos(file, extendida);
+  long currentEBRPos = -1;  // Posición de inicio del EBR a modificar
+  EBR objetivoEBR;
+  for (const auto& [ebr, pos] : ebrsPos) {
+    if (ebr.status == 1 && name == QString::fromLatin1(ebr.name)) {
+      objetivoEBR = ebr;
+      currentEBRPos = pos;
+      break;
+    }
+  }
+  if (currentEBRPos == -1) {
+    out->appendPlainText("No se encontró la partición lógica '" + name + ".");
+    return false;
+  }
+  long nuevoSize = static_cast<long>(objetivoEBR.size) + addBytes;
+
+  // Validación de reducción (addBytes < 0)
+  if (nuevoSize <= 0) {
+    out->appendPlainText(
+      "El tamaño resultante debe ser un entero positivo."
+      "\nTamaño actual: " +
+      QString::number(objetivoEBR.size) +
+      " Bytes \nSolicitud:     " + QString::number(addBytes) + "Bytes\n...");
+    return false;
+  }
+  // Validación de expansión (addBytes > 0)
+  if (addBytes > 0) {
+    // Posición del fin de la DATA de la lógica actual
+    long finActualData = objetivoEBR.start + objetivoEBR.size;
+    long maxExpansion = 0;
+    long nextEBRPos = objetivoEBR.next;
+    if (nextEBRPos == -1) {
+      // Es la última: el límite es el fin de la Extendida
+      maxExpansion = extendida.start + extendida.size - finActualData;
+    } else {
+      // El límite es el inicio del siguiente EBR.
+      maxExpansion = nextEBRPos - finActualData;
+    }
+    if (addBytes > maxExpansion) {
+      out->appendPlainText(
+        "No hay espacio suficiente para expandir la lógica.\nMáx. "
+        "disponible: " +
+        QString::number(maxExpansion) + " Bytes\n...");
+      return false;
+    }
+  }
+
+  // Aplicar cambio y guardar EBR
+  objetivoEBR.size = static_cast<int>(nuevoSize);
+  if (!writeEBRAt(file, currentEBRPos, objetivoEBR)) {
+    out->appendPlainText(
+      "Error al escribir el EBR modificado en el disco principal.\n");
+    return false;
+  }
+  // Actualizar RAID
+  std::fstream fileRaid = openDiskForReadWrite(raidPath);
+  if (fileRaid.is_open()) {
+    if (!writeEBRAt(fileRaid, currentEBRPos, objetivoEBR)) {
+      out->appendPlainText("Falló la escritura del EBR en RAID.");
+    }
+    fileRaid.close();
+  } else {
+    out->appendPlainText("Falló al abrir RAID para modificar EBR");
+  }
+  out->appendPlainText(
+    "Partición lógica modificada correctamente.\nNuevo tamaño: " +
+    QString::number(nuevoSize) + " Bytes\n...");
+  return true;
+}
+
 bool DiskManager::addAParticion(const QString& path, const QString& name,
   long addBytes, QPlainTextEdit* out) {
   std::fstream file = openDiskForReadWrite(path);
   if (!file.is_open()) {
-    out->appendPlainText("No se pudo abrir el disco.\n");
+    out->appendPlainText("No se pudo abrir el disco.");
     return false;
   }
-
   MBR mbr;
   if (!readMBR(file, mbr)) {
-    out->appendPlainText("No se pudo leer MBR.\n");
+    out->appendPlainText("No se pudo leer MBR.");
     file.close();
     return false;
   }
+  QString raidPath;
+  int pos = path.lastIndexOf(".disk");
+  raidPath = path.left(pos) + "_raid.disk";
+  Partition* objetivoMBR = nullptr;
 
-  Partition* objetivo = nullptr;
+  // Buscar en MBR y determinar tipo
   for (auto& p : mbr.parts) {
     if (p.status == 1 && name == QString::fromLatin1(p.name)) {
-      if (p.type != 'P' && p.type != 'E') {
-        out->appendPlainText(
-          "Solo se puede modificar primarias o extendida.\n");
+      if (p.type == 'P' || p.type == 'E') {
+        objetivoMBR = &p;
+        break;
+      } else {  // Lógica
+        bool success =
+          modificarLogica(file, mbr, name, addBytes, raidPath, out);
         file.close();
-        return false;
+        return success;
       }
-      objetivo = &p;
-      break;
     }
   }
-  if (!objetivo) {
-    out->appendPlainText("No se encontró la partición.\n");
+  // Buscar en EBRs si no se encontró en MBR
+  if (!objetivoMBR) {
+    Partition tempExt;
+    if (obtenerExtendida(mbr, tempExt)) {
+      auto ebrs = leerEBRsConPos(file, tempExt);
+      for (const auto& [ebr, pos] : ebrs) {
+        if (ebr.status == 1 && name == QString::fromLatin1(ebr.name)) {
+          bool success =
+            modificarLogica(file, mbr, name, addBytes, raidPath, out);
+          file.close();
+          return success;
+        }
+      }
+    }
+  }
+  // Si todavía no hay objetivo, no existe la partición.
+  if (!objetivoMBR) {
+    out->appendPlainText(
+      "No se encontró la partición con el nombre '" + name + "'.");
     file.close();
     return false;
   }
 
-  long nuevo = static_cast<long>(objetivo->size) + addBytes;
-  if (nuevo <= 0) {
-    out->appendPlainText("El tamaño resultante sería inválido.\n");
+  // Manejar Primaria/Extendida
+  long nuevoSize = static_cast<long>(objetivoMBR->size) + addBytes;
+  // Validación de reducción (addBytes < 0)
+  if (nuevoSize <= 0) {
+    out->appendPlainText("El tamaño resultante debe ser un entero positivo.");
     file.close();
     return false;
   }
-
-  auto usadas = obtenerParticionesUsadasOrdenadas(mbr);
-  auto huecos = calcularHuecos(usadas, mbr.size);
-
-  long finActual = objetivo->start + objetivo->size;
-  long espacioDisponible = -1;
-  for (auto& h : huecos) {
-    if (h.inicio == finActual) {
-      espacioDisponible = h.tam;
-      break;
-    }
-  }
-
+  // Validación de expansión (addBytes > 0)
   if (addBytes > 0) {
+    auto usadas = obtenerParticionesUsadasOrdenadas(mbr);
+    auto huecos = calcularHuecos(usadas, mbr.size);
+    long finActual = objetivoMBR->start + objetivoMBR->size;
+    long espacioDisponible = 0;
+    // Buscar el hueco siguiente
+    for (auto& h : huecos) {
+      if (h.inicio == finActual) {
+        espacioDisponible = h.tam;
+        break;
+      }
+    }
     if (espacioDisponible < addBytes) {
-      out->appendPlainText("No hay espacio suficiente para expandir.\n");
+      out->appendPlainText(
+        "No hay espacio suficiente para expandir.\nMáx. disponible: " +
+        QString::number(espacioDisponible) + " Bytes\n...");
       file.close();
       return false;
     }
   }
-  objetivo->size = static_cast<int>(nuevo);
 
+  // Guardar MBR
+  objetivoMBR->size = static_cast<int>(nuevoSize);
   if (!writeMBR(file, mbr)) {
-    out->appendPlainText("Error al guardar MBR.\n");
+    out->appendPlainText("Error al guardar MBR en el disco principal.");
     file.close();
     return false;
   }
   file.close();
-  out->appendPlainText("Partición modificada correctamente.\n");
+  // Lo mismo al RAID
+  std::fstream fileRaid = openDiskForReadWrite(raidPath);
+  if (fileRaid.is_open()) {
+    MBR mbrRaid;
+    if (readMBR(fileRaid, mbrRaid)) {
+      for (auto& p : mbrRaid.parts) {
+        if (p.status == 1 && name == QString::fromLatin1(p.name)) {
+          p.size = static_cast<int>(nuevoSize);
+          writeMBR(fileRaid, mbrRaid);
+          break;
+        }
+      }
+    }
+    fileRaid.close();
+  } else {
+    out->appendPlainText("No se pudo abrir el disco RAID para actualizar.");
+  }
+  out->appendPlainText("Partición modificada correctamente.\nNuevo tamaño: " +
+                       QString::number(nuevoSize) + " Bytes\n...");
   return true;
 }
 
-// MOUNT / UNMOUNT (sin cambios de firmas, pequeñas mejoras internas)
-struct PartMontada {
-  QString name;
-  QString id;
-};
-struct DiscoMontado {
-  QString path;
-  char letra;
-  std::vector<PartMontada> parts;
-};
+// MOUNT / UNMOUNT
 static std::vector<DiscoMontado> discosMontados;
 
 void imprimirParticionesDisco(QPlainTextEdit* out, const DiscoMontado& disco) {
@@ -1237,7 +1328,7 @@ void DiskManager::mount(
     if (p.status == 1 && p.type == 'E') extendida = p;
   }
   if (!encontrada && extendida.status == 1) {
-    ebrsPos = leerEBRsConPosRobusto(file, extendida);
+    ebrsPos = leerEBRsConPos(file, extendida);
     for (auto& par : ebrsPos) {
       if (par.first.status == 1 &&
           QString::fromLatin1(par.first.name) == name) {
@@ -1326,13 +1417,6 @@ void DiskManager::unmount(const QStringList& args, QPlainTextEdit* out) {
 }
 
 // -------------------------- REP (visualizar) --------------------------
-struct PartitionInfo {
-  QString name;
-  int start;
-  int size;
-  QString type;
-};
-
 void DiskManager::rep(
   const QStringList& args, QPlainTextEdit* out, const QDir& currentDir) {
   QString id, path;
@@ -1365,21 +1449,21 @@ void DiskManager::rep(
     }
   }
   if (!encontradoDisco) {
-    out->appendPlainText("No se ha montado el disco.");
+    out->appendPlainText("No se ha montado el disco.\n");
     return;
   }
   if (diskFilePath.isEmpty()) {
-    out->appendPlainText("No se encontró la partición montada en ese disco.");
+    out->appendPlainText("No se encontró la partición montada en ese disco.\n");
     return;
   }
   std::fstream file = openDiskForRead(diskFilePath);
   if (!file.is_open()) {
-    out->appendPlainText("No se pudo abrir el archivo del disco.");
+    out->appendPlainText("No se pudo abrir el archivo del disco.\n");
     return;
   }
   MBR mbr;
   if (!readMBR(file, mbr)) {
-    out->appendPlainText("Error leyendo MBR.");
+    out->appendPlainText("Error leyendo MBR.\n");
     file.close();
     return;
   }
@@ -1410,10 +1494,10 @@ void DiskManager::rep(
     blocks.push_back({"", lastPos, mbr.size - lastPos, "LIBRE"});
 
   if (extStart != -1) {
-    auto logicalsWithPos = leerEBRsConPosRobusto(
-      file, Partition{1, 'E', 0, static_cast<int>(extStart),
-              static_cast<int>(extEnd - extStart), {0}});
-    // Convertir EBRs (según la lectura robusta)
+    auto logicalsWithPos =
+      leerEBRsConPos(file, Partition{1, 'E', 0, static_cast<int>(extStart),
+                             static_cast<int>(extEnd - extStart), {0}});
+    // Convertir EBRs
     std::vector<EBR> logicals;
     for (auto& p : logicalsWithPos) logicals.push_back(p.first);
 
@@ -1488,7 +1572,7 @@ void DiskManager::rep(
   int extendedEndPixel = -1;
   bool findingExtendedRange = false;
 
-  // Calcular el rango de la zona Extendida
+  // Calcular el rango de la zona extendida
   for (const auto& b : blocks) {
     if (b.size <= 0) continue;
     int blockWidth;
@@ -1542,17 +1626,14 @@ void DiskManager::rep(
       drawY = START_Y + INNER_MARGIN;
       drawHeight = DISK_BAR_HEIGHT - INNER_MARGIN;
     }
-
     // Dibujar Rectángulo
     painter.setPen(QPen(BORDER_COLOR, 1));  // Color del borde definido
     painter.setBrush(Qt::white);
     painter.drawRect(drawX, drawY, drawWidth, drawHeight);
-
     QString typeText = b.type;
     QString infoText;
     if (b.type == "MBR" || b.type == "EBR") infoText = typeText;
     else infoText = QString::asprintf("%.1f%%", percentage * 100);
-
     painter.setPen(QPen(Qt::black));
     // Tipo (arriba)
     painter.drawText(drawX, drawY + drawHeight / 3, drawWidth, drawHeight / 4,
@@ -1571,13 +1652,11 @@ void DiskManager::rep(
     if (headerWidth > 0) {
       painter.setPen(QPen(BORDER_COLOR, 1));
       painter.setBrush(Qt::white);
-
       // Ajuste de margen para el encabezado
       int headerDrawX = extendedStartPixel + INNER_MARGIN;
       int headerDrawY = START_Y + INNER_MARGIN;
       int headerDrawWidth = headerWidth - INNER_MARGIN;
       int headerDrawHeight = EXTENDED_HEADER_HEIGHT - INNER_MARGIN;
-
       // Dibujar rectángulo y texto del encabezado
       painter.drawRect(
         headerDrawX, headerDrawY, headerDrawWidth, headerDrawHeight);
