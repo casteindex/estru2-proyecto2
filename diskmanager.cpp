@@ -1449,16 +1449,18 @@ void DiskManager::rep(
   // ----------------- Generar Imagen ---------------
   const int IMAGE_WIDTH = 1000;
   const int DISK_BAR_HEIGHT = 150;
-  const int PADDING = 20;
+  const int PADDING = 20;  // Padding del lienzo
   const int EXTENDED_HEADER_HEIGHT = 30;
   const int BLOCK_UNIT_WIDTH = 100;
   const int METADATA_UNIT_WIDTH = BLOCK_UNIT_WIDTH / 2;
+  const int INNER_MARGIN = 5;
+  const QColor BORDER_COLOR(142, 173, 196);  // Azul claro
 
   QPixmap pixmap(IMAGE_WIDTH, DISK_BAR_HEIGHT + 2 * PADDING);
 
   QPainter painter;
   int requiredWidth = 0;
-  // 1. Calcular el ancho total requerido
+  // Calcular el ancho total requerido
   for (const auto& b : blocks) {
     if (b.size <= 0) continue;
     if (b.type == "MBR" || b.type == "EBR")
@@ -1472,6 +1474,7 @@ void DiskManager::rep(
   painter.begin(&pixmap);
   painter.setRenderHint(QPainter::Antialiasing);
 
+  painter.setPen(QPen(BORDER_COLOR, 1));
   QFont font = painter.font();
   font.setPointSize(8);
   painter.setFont(font);
@@ -1480,108 +1483,112 @@ void DiskManager::rep(
   const int START_X = PADDING;
   int currentX = START_X;
 
-  // 2. CALCULAR EL RANGO EN PÍXELES DE LA ZONA EXTENDIDA (CORREGIDO)
+  // Calcular rango de la parte extendida en pixeles
   int extendedStartPixel = -1;
   int extendedEndPixel = -1;
-  bool findingExtendedRange =
-    false;  // Bandera para saber si estamos en la zona física EXTENDIDA
+  bool findingExtendedRange = false;
 
+  // Calcular el rango de la zona Extendida
   for (const auto& b : blocks) {
     if (b.size <= 0) continue;
-    int blockWidth = (b.type == "MBR" || b.type == "EBR") ? METADATA_UNIT_WIDTH
-                                                          : BLOCK_UNIT_WIDTH;
+    int blockWidth;
+    if (b.type == "MBR" || b.type == "EBR") blockWidth = METADATA_UNIT_WIDTH;
+    else blockWidth = BLOCK_UNIT_WIDTH;
 
-    // Criterio 1: Un bloque es EXTENDIDA, o es INTERNO (LÓGICA, EBR, LIBRE) y
-    // su inicio está dentro de extStart/extEnd
+    // Si el inicio del bloque está dentro de extStart/extEnd o es el bloque
+    // extendida vacío
     bool isBlockInExtendedZone =
       (b.start >= extStart && b.start < extEnd && extStart != -1);
-
     if (b.type == "EXTENDIDA" || isBlockInExtendedZone) {
-      // Si encontramos el inicio de la zona EXTENDIDA física
       if (!findingExtendedRange) {
         findingExtendedRange = true;
         extendedStartPixel = currentX;
       }
-      // Mantenemos la marca final para cada bloque que cae en la zona
       extendedEndPixel = currentX + blockWidth;
     } else if (findingExtendedRange) {
-      // Si encontramos un bloque que NO es parte de la extensión después de
-      // haber encontrado la extensión, terminamos el cálculo.
       findingExtendedRange = false;
     }
-
     currentX += blockWidth;
   }
 
-  // 3. Reiniciar currentX para el dibujo
+  // Marco exterior del disco
   currentX = START_X;
-  painter.drawRect(
-    START_X, START_Y, requiredWidth - 2 * PADDING, DISK_BAR_HEIGHT);
+  painter.drawRect(START_X, START_Y, requiredWidth - 2 * PADDING + INNER_MARGIN,
+    DISK_BAR_HEIGHT + INNER_MARGIN);
 
-  // 4. Dibujar los bloques
+  // Bloques
   for (const auto& b : blocks) {
     if (b.size <= 0) continue;
-    int blockWidth = (b.type == "MBR" || b.type == "EBR") ? METADATA_UNIT_WIDTH
-                                                          : BLOCK_UNIT_WIDTH;
+    int blockWidth;
+    if (b.type == "MBR" || b.type == "EBR") blockWidth = METADATA_UNIT_WIDTH;
+    else blockWidth = BLOCK_UNIT_WIDTH;
     double percentage = (totalSize > 0) ? (double)b.size / totalSize : 0.0;
-
-    // Condición para elevar y reducir la altura: Si el inicio del bloque cae
-    // dentro del rango físico de la partición EXTENDIDA.
     bool isInternalBlock =
       (extStart != -1 && b.start >= extStart && (b.start + b.size) <= extEnd);
 
-    int currentY = START_Y;
-    int currentBlockHeight = DISK_BAR_HEIGHT;
+    int drawX = currentX + INNER_MARGIN;
+    int drawY = START_Y + INNER_MARGIN;
+    int drawWidth = blockWidth - INNER_MARGIN;
+    int drawHeight = DISK_BAR_HEIGHT - INNER_MARGIN;
 
-    // El bloque EXTENDIDA (contenedor vacío) NUNCA debe considerarse interno
-    // para el dibujo.
+    // Ajuste para bloques internos de la Extendida
     if (isInternalBlock && b.type != "EXTENDIDA") {
-      currentY += EXTENDED_HEADER_HEIGHT;
-      currentBlockHeight -= EXTENDED_HEADER_HEIGHT;
+      drawY = START_Y + EXTENDED_HEADER_HEIGHT + INNER_MARGIN;
+      drawHeight = DISK_BAR_HEIGHT - EXTENDED_HEADER_HEIGHT - INNER_MARGIN;
+    }
+    // Nota: el bloque EXTENDIDA (vacío) usa la altura completa del disco menos
+    // el margen.
+    else if (b.type == "EXTENDIDA") {
+      drawY = START_Y + INNER_MARGIN;
+      drawHeight = DISK_BAR_HEIGHT - INNER_MARGIN;
     }
 
-    painter.setPen(QPen(Qt::black));
+    // Dibujar Rectángulo
+    painter.setPen(QPen(BORDER_COLOR, 1));  // Color del borde definido
     painter.setBrush(Qt::white);
-    painter.drawRect(currentX, currentY, blockWidth, currentBlockHeight);
+    painter.drawRect(drawX, drawY, drawWidth, drawHeight);
 
     QString typeText = b.type;
     QString infoText;
     if (b.type == "MBR" || b.type == "EBR") infoText = typeText;
     else infoText = QString::asprintf("%.1f%%", percentage * 100);
 
-    // Dibujo de texto (Tipo y Porcentaje)
-    painter.drawText(currentX, currentY + currentBlockHeight / 3, blockWidth,
-      currentBlockHeight / 4, Qt::AlignCenter, typeText);
+    painter.setPen(QPen(Qt::black));
+    // Tipo (arriba)
+    painter.drawText(drawX, drawY + drawHeight / 3, drawWidth, drawHeight / 4,
+      Qt::AlignCenter, typeText);
+    // Porcentaje (abajo, si no es MBR o EBR)
     if (b.type != "MBR" && b.type != "EBR") {
-      painter.drawText(currentX, currentY + currentBlockHeight * 2 / 3,
-        blockWidth, currentBlockHeight / 4, Qt::AlignCenter, infoText);
+      painter.drawText(drawX, drawY + drawHeight * 2 / 3, drawWidth,
+        drawHeight / 4, Qt::AlignCenter, infoText);
     }
     currentX += blockWidth;
   }
 
-  // 5. DIBUJAR ENCABEZADO "EXTENDIDA" (AHORA SE DIBUJA SIEMPRE QUE EXISTA LA
-  // ZONA FÍSICA) El encabezado solo debe dibujarse si la zona EXTENDIDA existe
-  // y fue calculada.
+  // Dibujar encabezado si hay partición extendida
   if (extStart != -1 && extendedStartPixel != -1) {
-    painter.setPen(QPen(Qt::black));
-    painter.setBrush(Qt::white);
-
-    // Usamos extendedEndPixel - extendedStartPixel para el ancho del encabezado
     int headerWidth = extendedEndPixel - extendedStartPixel;
-
-    // El encabezado solo se dibuja si el contenedor tiene algo que cubrir
-    // (ancho > 0)
     if (headerWidth > 0) {
+      painter.setPen(QPen(BORDER_COLOR, 1));
+      painter.setBrush(Qt::white);
+
+      // Ajuste de margen para el encabezado
+      int headerDrawX = extendedStartPixel + INNER_MARGIN;
+      int headerDrawY = START_Y + INNER_MARGIN;
+      int headerDrawWidth = headerWidth - INNER_MARGIN;
+      int headerDrawHeight = EXTENDED_HEADER_HEIGHT - INNER_MARGIN;
+
+      // Dibujar rectángulo y texto del encabezado
       painter.drawRect(
-        extendedStartPixel, START_Y, headerWidth, EXTENDED_HEADER_HEIGHT);
-      painter.setPen(QPen(Qt::black));
-      painter.drawText(extendedStartPixel, START_Y, headerWidth,
-        EXTENDED_HEADER_HEIGHT, Qt::AlignCenter, "EXTENDIDA");
+        headerDrawX, headerDrawY, headerDrawWidth, headerDrawHeight);
+      painter.setPen(QPen(Qt::black));  // Texto NEGRO
+      painter.drawText(headerDrawX, headerDrawY, headerDrawWidth,
+        headerDrawHeight, Qt::AlignCenter, "EXTENDIDA");
     }
   }
-
   painter.end();
 
+  // Guardar la imagen
   QString finalPath = path;
   QFileInfo fi(path);
   if (!fi.isAbsolute()) finalPath = currentDir.absoluteFilePath(path);
